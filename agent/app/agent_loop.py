@@ -31,7 +31,7 @@ Available tools:
 
 Rules:
 - Do NOT place orders; provide recommendations only.
-- Prefer intervals among: 1m,5m,15m,30m,1h,4h,1d.
+- Prefer intervals: 1m,5m,15m,30m,60m,4h,1d,1W,1M.
 - Keep outputs concise JSON.
 If a tool fails, try a different approach or finalize gracefully.
 """
@@ -111,9 +111,9 @@ async def run_agent(run_id: str, ws_broadcast):
                     elif name == "mexc_list_usdt":
                         result = await tool_mexc_list_usdt()
                     elif name == "mexc_klines":
-                        result = await tool_mexc_klines(args.get("symbol",""), args.get("interval","1h"), int(args.get("limit",200)))
+                        result = await tool_mexc_klines(args.get("symbol",""), args.get("interval","60m"), int(args.get("limit",200)))
                     elif name == "mexc_ta":
-                        result = await tool_mexc_ta(args.get("symbol",""), args.get("interval","1h"), int(args.get("limit",300)))
+                        result = await tool_mexc_ta(args.get("symbol",""), args.get("interval","60m"), int(args.get("limit",300)))
                     else:
                         result = {"error": "unknown tool"}
 
@@ -156,7 +156,7 @@ async def tool_mexc_list_usdt() -> dict:
         syms = [s for s in syms if s in uni]
     return {"symbols": syms}
 
-async def tool_mexc_klines(symbol: str, interval: str="1h", limit: int=200) -> dict:
+async def tool_mexc_klines(symbol: str, interval: str="60m", limit: int=200) -> dict:
     df = await mexc.klines(symbol.upper(), interval=interval, limit=limit)
     # Return a compressed view to keep tokens lean:
     tail = df.tail(5)
@@ -172,7 +172,7 @@ async def tool_mexc_klines(symbol: str, interval: str="1h", limit: int=200) -> d
     ]
     return {"symbol": symbol.upper(), "interval": interval, "last": rows, "last_close": float(df["close"].iloc[-1])}
 
-async def tool_mexc_ta(symbol: str, interval: str="1h", limit: int=300) -> dict:
+async def tool_mexc_ta(symbol: str, interval: str="60m", limit: int=300) -> dict:
     df = await mexc.klines(symbol.upper(), interval=interval, limit=limit)
     summ = ta_summary(df)
     # enrich with 24h change if possible

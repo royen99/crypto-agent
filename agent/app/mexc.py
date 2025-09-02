@@ -9,6 +9,17 @@ _http_lock = asyncio.Semaphore(4)  # simple throttle
 
 class MexcError(RuntimeError): pass
 
+# top-level, under imports
+VALID_INTERVALS = {"1m","5m","15m","30m","60m","4h","1d","1W","1M"}
+ALIASES = {"1h":"60m", "4hr":"4h", "1w":"1W", "1mo":"1M"}
+
+def _norm_interval(iv: str) -> str:
+    iv = (iv or "").strip()
+    iv = ALIASES.get(iv, iv)
+    if iv not in VALID_INTERVALS:
+        raise MexcError(f"invalid interval '{iv}'; use one of {sorted(VALID_INTERVALS)}")
+    return iv
+
 async def _get(path: str, params: dict|None=None) -> Any:
     url = f"{BASE}{path}"
     async with _http_lock, httpx.AsyncClient(timeout=20.0) as client:
@@ -45,8 +56,9 @@ async def list_usdt_symbols(online_only: bool=True) -> list[str]:
             continue
     return sorted(out)
 
-async def klines(symbol: str, interval: str="1h", limit: int=200,
+async def klines(symbol: str, interval: str="60m", limit: int=200,
                  start_ms: int|None=None, end_ms: int|None=None) -> pd.DataFrame:
+    interval = _norm_interval(interval)
     params = {"symbol": symbol, "interval": interval, "limit": min(limit, 1000)}
     if start_ms and end_ms:
         params.update({"startTime": start_ms, "endTime": end_ms})
