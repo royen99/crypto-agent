@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from . import mexc
 from .ta import ta_summary
 from .db import SessionLocal, Run, RunStatus, add_event, Memory
+from .mexc_signed import new_order as signed_new_order, query_order as signed_query
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 MODEL = os.getenv("MODEL_NAME", "qwen2.5")
@@ -62,6 +63,15 @@ async def call_ollama(messages: list[dict]) -> dict:
             except Exception:
                 pass
         return {"type": "final", "answer": "Model could not produce valid JSON; stopping."}
+
+async def tool_mexc_buy(symbol:str, price:float, usdt:float):
+    qty = max(0.0, int((usdt/price)*10000)/10000.0)
+    r = await signed_new_order(symbol, "BUY", "LIMIT", qty, price, tif="GTC", test=os.getenv("TRADE_TEST_ONLY","true").lower()=="true")
+    return {"ok": True, "qty": qty, "resp": r}
+
+async def tool_mexc_sell(symbol:str, price:float, qty:float):
+    r = await signed_new_order(symbol, "SELL", "LIMIT", qty, price, tif="GTC", test=os.getenv("TRADE_TEST_ONLY","true").lower()=="true")
+    return {"ok": True, "resp": r}
 
 async def tool_http_get(url: str) -> dict:
     host = urlparse(url).hostname or ""

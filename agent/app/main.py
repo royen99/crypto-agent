@@ -14,6 +14,7 @@ from .ws import ws_manager
 from . import mexc
 from .ta import ta_summary
 from .recs import recs_loop, get_latest, get_meta
+from .trader import trader_loop
 
 import datetime as dt
 
@@ -29,6 +30,7 @@ async def startup():
 
     import asyncio
     asyncio.create_task(recs_loop(broadcast))
+    asyncio.create_task(trader_loop(broadcast))
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")

@@ -11,6 +11,34 @@ Base = declarative_base()
 engine = create_async_engine(DATABASE_URL, echo=False, future=True)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
+class MexcOrder(Base):
+    __tablename__ = "mexc_orders"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    side: Mapped[str] = mapped_column(String(4))
+    type: Mapped[str] = mapped_column(String(10))
+    client_order_id: Mapped[str | None] = mapped_column(String(64))
+    mexc_order_id: Mapped[int | None] = mapped_column(BigInteger)
+    price: Mapped[float | None] = mapped_column(Float)
+    qty: Mapped[float | None] = mapped_column(Float)
+    status: Mapped[str | None] = mapped_column(String(24), index=True)
+    is_test: Mapped[bool] = mapped_column(Boolean, default=True)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Position(Base):
+    __tablename__ = "positions"
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    qty: Mapped[float] = mapped_column(Float, default=0.0)
+    avg_price: Mapped[float | None] = mapped_column(Float)
+    state: Mapped[str] = mapped_column(String(16), default="flat")
+    target_price: Mapped[float | None] = mapped_column(Float)
+    stop_price: Mapped[float | None] = mapped_column(Float)
+    last_buy_order: Mapped[int | None] = mapped_column(BigInteger)
+    last_sell_order: Mapped[int | None] = mapped_column(BigInteger)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
 class RecPoint(Base):
     __tablename__ = "rec_points"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
