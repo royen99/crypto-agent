@@ -34,7 +34,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://agent:agentpw@db:5432/aiagent
       ALLOWLIST: api.github.com,example.com
       MAX_STEPS: "8"
-      MODEL_NAME: qwen2.5
+      MODEL_NAME: qwen2.5:7b
     ports:
       - "8081:8080"
     volumes:

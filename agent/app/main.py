@@ -68,3 +68,23 @@ async def ws_run(ws: WebSocket, run_id: str):
         ws_manager.remove(run_id, ws)
     except Exception:
         ws_manager.remove(run_id, ws)
+
+@app.get("/debug/llm")
+async def debug_llm():
+    from .agent_loop import OLLAMA_URL, MODEL
+    test_messages = [
+        {"role":"system","content":"Reply with a single JSON object only: {\"type\":\"final\",\"answer\":\"ok\"}"},
+        {"role":"user","content":"Say ok"}
+    ]
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.post(f"{OLLAMA_URL}/api/chat", json={
+            "model": MODEL,
+            "messages": test_messages,
+            "stream": False,
+            "format": "json"
+        })
+        try:
+            j = r.json()
+        except Exception:
+            return {"http_status": r.status_code, "text": await r.text()}
+    return {"http_status": r.status_code, "raw": j.get("message",{}).get("content","")}
