@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os, enum, json, datetime as dt
 from typing import Optional
-from sqlalchemy import String, Text, JSON, Enum, Integer, func, text, ForeignKey, Float, DateTime
+from sqlalchemy import String, Text, JSON, Enum, Integer, func, text, ForeignKey, Float, DateTime, BigInteger, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, declarative_base, relationship
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
