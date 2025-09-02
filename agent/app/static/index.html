@@ -153,49 +153,75 @@
     return `<span class="${cls}">${s}%</span>`;
   }
 
-  async function loadRecs() {
-    const interval = document.getElementById('rec-interval').value;
-    const symbols = document.getElementById('rec-symbols').value.trim();
-    const status = document.getElementById('rec-status');
+  function renderRecs(data) {
     const tbody = document.getElementById('rec-tbody');
-
-    status.textContent = 'Loading…';
+    const status = document.getElementById('rec-status');
     tbody.innerHTML = '';
-
-    const qs = new URLSearchParams({ interval });
-    if (symbols) qs.set('symbols', symbols);
-
-    const res = await fetch(`/recommendations?${qs.toString()}`);
-    const data = await res.json();
-
-    // errors (non-fatal)
-    if ((data.errors || []).length) {
-      console.warn('Errors:', data.errors);
-    }
 
     (data.results || []).forEach(r => {
       const rec = r.recommendation || 'UNKNOWN';
+      const ds = (r.delta_score?.toFixed ? r.delta_score.toFixed(2) : (r.delta_score ?? "—"));
+      const dp = (r.delta_price?.toFixed ? r.delta_price.toFixed(6) : (r.delta_price ?? "—"));
+      const dsCls = r.delta_score > 0 ? "text-green-400" : (r.delta_score < 0 ? "text-red-400" : "text-neutral-300");
+      const dpCls = r.delta_price > 0 ? "text-green-400" : (r.delta_price < 0 ? "text-red-400" : "text-neutral-300");
+
       const tr = document.createElement('tr');
       tr.className = "border-b border-neutral-900 hover:bg-neutral-900/40";
-
       tr.innerHTML = `
         <td class="py-2 pr-4 font-mono">${r.symbol}</td>
-        <td class="py-2 pr-4">${r.price?.toFixed ? r.price.toFixed(6) : r.price ?? "—"}</td>
+        <td class="py-2 pr-4">${r.price?.toFixed ? r.price.toFixed(6) : r.price ?? "—"}
+          <span class="${dpCls} text-xs ml-1">(${dp})</span>
+        </td>
         <td class="py-2 pr-4">${changeFmt(r.change24h)}</td>
         <td class="py-2 pr-4">${r.rsi14?.toFixed ? r.rsi14.toFixed(1) : "—"}</td>
         <td class="py-2 pr-4">${r.macd_hist?.toFixed ? r.macd_hist.toFixed(6) : "—"}</td>
-        <td class="py-2 pr-4">${r.score?.toFixed ? r.score.toFixed(2) : "—"}</td>
+        <td class="py-2 pr-4">${r.score?.toFixed ? r.score.toFixed(2) : "—"}
+          <span class="${dsCls} text-xs ml-1">(${ds})</span>
+        </td>
         <td class="py-2 pr-4">${badge(rec, rec)}</td>
         <td class="py-2 pr-4 text-neutral-300">${(r.reasons||[]).join("; ") || "—"}</td>
       `;
       tbody.appendChild(tr);
     });
 
-    status.textContent = `as of ${new Date(data.as_of || Date.now()).toLocaleTimeString()}, ${data.results?.length||0} symbols`;
+    status.textContent = `auto · ${data.interval} · as of ${new Date(data.as_of || Date.now()).toLocaleTimeString()} · ${data.results?.length||0} symbols`;
   }
 
+  async function loadRecs() {
+    const interval = document.getElementById('rec-interval').value;
+    const symbols = document.getElementById('rec-symbols').value.trim();
+    const status = document.getElementById('rec-status');
+    status.textContent = 'Loading…';
+
+    const qs = new URLSearchParams({ interval });
+    if (symbols) qs.set('symbols', symbols);
+
+    const res = await fetch(`/recommendations?${qs.toString()}`);
+    const data = await res.json();
+    renderRecs(data);
+  }
+
+  // manual button still works
   document.getElementById('rec-refresh').onclick = loadRecs;
-  // auto-load on first open
+
+  // 🔌 subscribe to server-pushed snapshots
+  (function connectRecsWS() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws/recs`);
+    ws.onopen = () => console.log('[recs] ws connected');
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'recs' && msg.data) renderRecs(msg.data);
+      } catch {}
+    };
+    ws.onclose = () => {
+      console.warn('[recs] ws closed; retrying in 3s');
+      setTimeout(connectRecsWS, 3000);
+    };
+  })();
+
+  // initial fill (in case WS hasn’t pushed yet)
   loadRecs();
 </script>
 

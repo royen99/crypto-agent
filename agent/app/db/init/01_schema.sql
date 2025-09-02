@@ -56,6 +56,16 @@ CREATE TABLE IF NOT EXISTS memories (
   last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Recommendation snapshots
+CREATE TABLE IF NOT EXISTS rec_snapshots (
+  id BIGSERIAL PRIMARY KEY,
+  as_of TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  interval VARCHAR(8) NOT NULL,
+  payload JSONB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_rec_snapshots_asof ON rec_snapshots(as_of);
+
 -- ===== TRIGGERS =====
 DO $$
 BEGIN

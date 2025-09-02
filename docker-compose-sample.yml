@@ -35,6 +35,12 @@ services:
       ALLOWLIST: api.github.com,example.com
       MAX_STEPS: "8"
       MODEL_NAME: qwen2.5:7b
+      REC_ENABLED: "true"          # turn the loop on/off
+      REC_INTERVAL: "60m"          # default interval for the loop
+      REC_SYMBOLS: ""              # empty = use UNIVERSE env, else CSV like BTCUSDT,ETHUSDT
+      REC_PERIOD_SEC: "60"         # run every N seconds
+      REC_LIMIT: "300"             # klines per symbol
+      REC_SNAPSHOTS: "false"       # optional DB persistence (off by default)
     ports:
       - "8081:8080"
     volumes:
