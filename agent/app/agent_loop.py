@@ -91,13 +91,18 @@ async def tool_write_note(session: AsyncSession, key: str, text: str, tags: list
     return {"ok": True, "id": m.id}
 
 async def run_agent(run_id: str, ws_broadcast):
-    # each worker has its own session
     async with SessionLocal() as session:
         run = await session.get(Run, run_id)
         if not run:
             return
         run.status = RunStatus.running
         await session.commit()
+
+        # 🔸 tell the UI we started
+        try:
+            await ws_broadcast(run.id, {"type":"log","step":0,"data":{"msg":"run started"}})
+        except Exception:
+            pass
 
         messages = [
             {"role":"system", "content": SYSTEM_PROMPT},
@@ -106,7 +111,16 @@ async def run_agent(run_id: str, ws_broadcast):
 
         try:
             for step in range(1, MAX_STEPS + 1):
-                reply = await call_ollama(messages)
+                # 🔸 time-box the model call so it can't hang forever
+                try:
+                    reply = await asyncio.wait_for(call_ollama(messages), timeout=25)
+                except asyncio.TimeoutError:
+                    await add_event(session, run.id, step, "error", {"msg":"LLM timeout"})
+                    await ws_broadcast(run.id, {"type":"error","step":step,"data":{"msg":"LLM timeout"}})
+                    run.status = RunStatus.error
+                    await session.commit()
+                    return
+
                 await add_event(session, run.id, step, "thought", {"raw": reply})
                 await ws_broadcast(run.id, {"type":"thought","step":step,"data":reply})
 
@@ -143,9 +157,9 @@ async def run_agent(run_id: str, ws_broadcast):
                     await ws_broadcast(run.id, {"type":"final","step":step,"data":{"answer":run.final_answer}})
                     return
 
+                # force JSON compliance next loop
                 messages.append({"role":"user","content":"Please respond strictly in the JSON formats described."})
 
-            # exhausted steps
             run.status = RunStatus.stopped
             await session.commit()
             await add_event(session, run.id, MAX_STEPS, "error", {"msg":"Stopped due to max steps."})
@@ -155,7 +169,10 @@ async def run_agent(run_id: str, ws_broadcast):
             run.status = RunStatus.error
             await session.commit()
             await add_event(session, run.id, 0, "error", {"msg": str(e)})
-            await ws_broadcast(run.id, {"type":"error","step":0,"data":{"msg":str(e)}})
+            try:
+                await ws_broadcast(run.id, {"type":"error","step":0,"data":{"msg":str(e)}})
+            except Exception:
+                pass
 
 async def tool_mexc_list_usdt() -> dict:
     syms = await mexc.list_usdt_symbols(online_only=True)
