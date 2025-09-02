@@ -37,15 +37,31 @@ If a tool fails, try a different approach or finalize gracefully.
 """
 
 async def call_ollama(messages: list[dict]) -> dict:
-    payload = {"model": MODEL, "messages": messages, "stream": False}
+    payload = {
+        "model": MODEL,
+        "messages": messages,
+        "stream": False,
+        "format": "json",  # force JSON from Ollama
+        "options": {"temperature": 0.2, "top_p": 0.9}
+    }
     async with httpx.AsyncClient(timeout=60.0) as client:
         r = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
         r.raise_for_status()
         content = r.json()["message"]["content"]
+
+    # primary parse
     try:
         return json.loads(content)
     except Exception:
-        return {"type":"final","answer":"Model returned invalid JSON once; stopping."}
+        # surgical fallback: extract the largest {...} block
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(content[start:end+1])
+            except Exception:
+                pass
+        return {"type": "final", "answer": "Model could not produce valid JSON; stopping."}
 
 async def tool_http_get(url: str) -> dict:
     host = urlparse(url).hostname or ""

@@ -5,6 +5,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import httpx
+from sqlalchemy import text
 from .db import init_db, SessionLocal, Run, RunStatus
 from .agent_loop import run_agent
 from .ws import ws_manager
