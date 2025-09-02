@@ -40,6 +40,38 @@ async def index():
 class RunCreate(BaseModel):
     goal: str
 
+@app.get("/recs/history")
+async def recs_history(symbols: str, interval: str = "60m", points: int = 48):
+    """
+    Return last N points (asc time) for each symbol: price + score.
+    symbols: CSV like BTCUSDT,ETHUSDT
+    """
+    syms = [s.strip().upper() for s in (symbols or "").split(",") if s.strip()]
+    if not syms:
+        raise HTTPException(400, "symbols required")
+
+    out = {}
+    async with SessionLocal() as s:
+        for sym in syms:
+            rows = (await s.execute(
+                text("""
+                    SELECT as_of, price, score
+                    FROM rec_points
+                    WHERE symbol=:sym AND interval=:iv
+                    ORDER BY as_of DESC
+                    LIMIT :lim
+                """),
+                {"sym": sym, "iv": interval, "lim": points}
+            )).all()
+
+            rows = rows[::-1]  # oldest→newest
+            out[sym] = {
+                "as_of":  [str(r[0]) for r in rows],
+                "price":  [float(r[1]) if r[1] is not None else None for r in rows],
+                "score":  [float(r[2]) if r[2] is not None else None for r in rows],
+            }
+    return {"interval": interval, "points": points, "series": out}
+
 @app.post("/runs")
 async def create_run(req: RunCreate):
     run_id = str(uuid.uuid4())

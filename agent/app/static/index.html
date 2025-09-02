@@ -40,7 +40,7 @@
         <h2 class="font-semibold">Live Log</h2>
         <button id="clearBtn" class="text-xs px-2 py-1 border border-neutral-700 rounded">Clear</button>
       </div>
-      <div id="log" class="text-sm font-mono whitespace-pre-wrap h-96 overflow-auto"></div>
+      <div id="log" class="text-sm font-mono whitespace-pre-wrap h-40 overflow-auto"></div>
     </div>
   </div>
 
@@ -76,19 +76,21 @@
 
   <div class="overflow-x-auto">
     <table class="w-full text-sm">
-      <thead class="text-neutral-300">
-        <tr class="border-b border-neutral-800">
-          <th class="text-left py-2 pr-4">Symbol</th>
-          <th class="text-left py-2 pr-4">Price</th>
-          <th class="text-left py-2 pr-4">24h %</th>
-          <th class="text-left py-2 pr-4">RSI14</th>
-          <th class="text-left py-2 pr-4">MACD Hist</th>
-          <th class="text-left py-2 pr-4">Score</th>
-          <th class="text-left py-2 pr-4">Recommendation</th>
-          <th class="text-left py-2 pr-4">Reasons</th>
-        </tr>
-      </thead>
-      <tbody id="rec-tbody"></tbody>
+    <thead class="text-neutral-300">
+    <tr class="border-b border-neutral-800">
+        <th class="text-left py-2 pr-4">Symbol</th>
+        <th class="text-left py-2 pr-4">Price</th>
+        <th class="text-left py-2 pr-4">Price ▵</th>
+        <th class="text-left py-2 pr-4">24h %</th>
+        <th class="text-left py-2 pr-4">RSI14</th>
+        <th class="text-left py-2 pr-4">MACD Hist</th>
+        <th class="text-left py-2 pr-4">Score</th>
+        <th class="text-left py-2 pr-4">Score ▵</th>
+        <th class="text-left py-2 pr-4">Recommendation</th>
+        <th class="text-left py-2 pr-4">Reasons</th>
+    </tr>
+    </thead>
+    <tbody id="rec-tbody"></tbody>
     </table>
   </div>
 </div>
@@ -167,25 +169,33 @@
 
       const tr = document.createElement('tr');
       tr.className = "border-b border-neutral-900 hover:bg-neutral-900/40";
-      tr.innerHTML = `
+        tr.innerHTML = `
         <td class="py-2 pr-4 font-mono">${r.symbol}</td>
-        <td class="py-2 pr-4">${r.price?.toFixed ? r.price.toFixed(6) : r.price ?? "—"}
-          <span class="${dpCls} text-xs ml-1">(${dp})</span>
+        <td class="py-2 pr-4">
+            ${r.price?.toFixed ? r.price.toFixed(6) : r.price ?? "—"}
+        </td>
+        <td class="py-2 pr-4">
+            <div id="spark-price-${r.symbol}" class="w-28 h-7"></div>
         </td>
         <td class="py-2 pr-4">${changeFmt(r.change24h)}</td>
         <td class="py-2 pr-4">${r.rsi14?.toFixed ? r.rsi14.toFixed(1) : "—"}</td>
         <td class="py-2 pr-4">${r.macd_hist?.toFixed ? r.macd_hist.toFixed(6) : "—"}</td>
-        <td class="py-2 pr-4">${r.score?.toFixed ? r.score.toFixed(2) : "—"}
-          <span class="${dsCls} text-xs ml-1">(${ds})</span>
+        <td class="py-2 pr-4">
+            ${r.score?.toFixed ? r.score.toFixed(2) : "—"}
+        </td>
+        <td class="py-2 pr-4">
+            <div id="spark-score-${r.symbol}" class="w-28 h-7"></div>
         </td>
         <td class="py-2 pr-4">${badge(rec, rec)}</td>
         <td class="py-2 pr-4 text-neutral-300">${(r.reasons||[]).join("; ") || "—"}</td>
-      `;
+        `;
+
       tbody.appendChild(tr);
     });
 
     status.textContent = `auto · ${data.interval} · as of ${new Date(data.as_of || Date.now()).toLocaleTimeString()} · ${data.results?.length||0} symbols`;
-  }
+    refreshSparklines(data.interval);
+    }
 
   async function loadRecs() {
     const interval = document.getElementById('rec-interval').value;
@@ -223,6 +233,60 @@
 
   // initial fill (in case WS hasn’t pushed yet)
   loadRecs();
+
+function sparklineSVG(vals, {width=112, height=28, strokeWidth=2, padding=2}={}){
+  const w = width, h = height, pad = padding;
+  const xs = vals.filter(v => v !== null && v !== undefined);
+  if (!xs.length) return `<svg width="${w}" height="${h}"></svg>`;
+  const min = Math.min(...xs), max = Math.max(...xs);
+  const rng = (max - min) || 1;
+
+  const step = (w - pad*2) / Math.max(vals.length - 1, 1);
+  const points = vals.map((v, i) => {
+    const x = pad + i*step;
+    const y = v == null ? null : (h - pad - ((v - min)/rng) * (h - pad*2));
+    return [x, y];
+  });
+
+  // build path (skip nulls)
+  let d = "";
+  for (let i=0;i<points.length;i++){
+    const [x,y] = points[i];
+    if (y == null) continue;
+    const cmd = d ? "L" : "M";
+    d += `${cmd}${x.toFixed(1)},${y.toFixed(1)} `;
+  }
+
+  // last value dot
+  const last = [...points].reverse().find(([x,y]) => y != null);
+
+  return `
+  <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+    <path d="${d.trim()}" fill="none" stroke="currentColor" stroke-width="${strokeWidth}" opacity="0.9"/>
+    ${last ? `<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.5" fill="currentColor" />` : ""}
+  </svg>`;
+}
+
+async function refreshSparklines(interval){
+  // collect symbols in the table
+  const syms = [...document.querySelectorAll('#rec-tbody tr td:first-child')].map(td => td.textContent.trim());
+  if (!syms.length) return;
+
+  const qs = new URLSearchParams({ interval, symbols: syms.join(','), points: 48 });
+  const res = await fetch(`/recs/history?${qs.toString()}`);
+  const data = await res.json();
+
+  const series = data.series || {};
+  syms.forEach(sym => {
+    const row = series[sym];
+    if (!row) return;
+    const priceEl = document.getElementById(`spark-price-${sym}`);
+    const scoreEl = document.getElementById(`spark-score-${sym}`);
+    if (priceEl) priceEl.innerHTML = sparklineSVG(row.price);
+    if (scoreEl) scoreEl.innerHTML = sparklineSVG(row.score);
+  });
+}
+
 </script>
 
 </body>

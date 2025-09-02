@@ -102,13 +102,28 @@ async def recs_loop(broadcast):
             if persist:
                 try:
                     async with SessionLocal() as s:
-                        # one-row-per-symbol snapshot table is nicer, but to keep it optional,
-                        # we'll store as a single JSON row in a minimal table (add DDL if you enable this).
-                        await s.execute(
-                            "INSERT INTO rec_snapshots(as_of, interval, payload) VALUES (NOW(), :iv, :pl)",
-                            {"iv": interval, "pl": snap}
-                        )
-                        await s.commit()
+                        rows = []
+                        for r in snap.get("results", []):
+                            rows.append({
+                                "sym": r["symbol"],
+                                "iv":  interval,
+                                "pr":  r.get("price"),
+                                "sc":  r.get("score"),
+                                "rsi": r.get("rsi14"),
+                                "mh":  r.get("macd_hist"),
+                                "ch":  r.get("change24h"),
+                                "rec": r.get("recommendation"),
+                                "rsn": r.get("reasons") or []
+                            })
+                        if rows:
+                            await s.execute(
+                                """
+                                INSERT INTO rec_points(symbol, interval, price, score, rsi14, macd_hist, change24h, recommendation, reasons)
+                                VALUES (:sym, :iv, :pr, :sc, :rsi, :mh, :ch, :rec, :rsn)
+                                """,
+                                rows
+                            )
+                            await s.commit()
                 except Exception:
                     pass
 
