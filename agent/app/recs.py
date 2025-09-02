@@ -3,7 +3,7 @@ import os, asyncio, datetime as dt
 from typing import List, Dict, Any, Optional
 from . import mexc
 from .ta import ta_summary
-from .db import SessionLocal  # only needed if REC_SNAPSHOTS=true
+from .db import SessionLocal, RecPoint
 
 # in-memory cache
 LATEST: Optional[dict] = None
@@ -102,33 +102,25 @@ async def recs_loop(broadcast):
             if persist:
                 try:
                     async with SessionLocal() as s:
-                        rows = []
+                        objs = []
                         for r in snap.get("results", []):
-                            rows.append({
-                                "sym": r["symbol"],
-                                "iv":  interval,
-                                "pr":  r.get("price"),
-                                "sc":  r.get("score"),
-                                "rsi": r.get("rsi14"),
-                                "mh":  r.get("macd_hist"),
-                                "ch":  r.get("change24h"),
-                                "rec": r.get("recommendation"),
-                                "rsn": r.get("reasons") or []
-                            })
-                        if rows:
-                            await s.execute(
-                                """
-                                INSERT INTO rec_points(symbol, interval, price, score, rsi14, macd_hist, change24h, recommendation, reasons)
-                                VALUES (:sym, :iv, :pr, :sc, :rsi, :mh, :ch, :rec, :rsn)
-                                """,
-                                rows
-                            )
+                            objs.append(RecPoint(
+                                symbol=r["symbol"],
+                                interval=interval,
+                                price=r.get("price"),
+                                score=r.get("score"),
+                                rsi14=r.get("rsi14"),
+                                macd_hist=r.get("macd_hist"),
+                                change24h=r.get("change24h"),
+                                recommendation=r.get("recommendation"),
+                                reasons=r.get("reasons") or []
+                            ))
+                        if objs:
+                            s.add_all(objs)
                             await s.commit()
-                except Exception:
-                    pass
-
-            # push via WS to all clients
-            await broadcast("recs", {"type": "recs", "data": snap})
+                except Exception as e:
+                    # optional: broadcast/log the error instead of swallowing
+                    await broadcast("recs", {"type":"recs_persist_error", "error": str(e)})
         except Exception as e:
             await broadcast("recs", {"type": "recs_error", "error": str(e)})
         await asyncio.sleep(period)

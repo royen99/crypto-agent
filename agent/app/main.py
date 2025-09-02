@@ -6,9 +6,9 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import httpx
-from sqlalchemy import text
+from sqlalchemy import text, select, desc
 from typing import Optional, List
-from .db import init_db, SessionLocal, Run, RunStatus
+from .db import init_db, SessionLocal, Run, RunStatus, RecPoint
 from .agent_loop import run_agent
 from .ws import ws_manager
 from . import mexc
@@ -42,10 +42,6 @@ class RunCreate(BaseModel):
 
 @app.get("/recs/history")
 async def recs_history(symbols: str, interval: str = "60m", points: int = 48):
-    """
-    Return last N points (asc time) for each symbol: price + score.
-    symbols: CSV like BTCUSDT,ETHUSDT
-    """
     syms = [s.strip().upper() for s in (symbols or "").split(",") if s.strip()]
     if not syms:
         raise HTTPException(400, "symbols required")
@@ -53,17 +49,13 @@ async def recs_history(symbols: str, interval: str = "60m", points: int = 48):
     out = {}
     async with SessionLocal() as s:
         for sym in syms:
-            rows = (await s.execute(
-                text("""
-                    SELECT as_of, price, score
-                    FROM rec_points
-                    WHERE symbol=:sym AND interval=:iv
-                    ORDER BY as_of DESC
-                    LIMIT :lim
-                """),
-                {"sym": sym, "iv": interval, "lim": points}
-            )).all()
-
+            stmt = (
+                select(RecPoint.as_of, RecPoint.price, RecPoint.score)
+                .where(RecPoint.symbol == sym, RecPoint.interval == interval)
+                .order_by(desc(RecPoint.as_of))
+                .limit(points)
+            )
+            rows = (await s.execute(stmt)).all()
             rows = rows[::-1]  # oldest→newest
             out[sym] = {
                 "as_of":  [str(r[0]) for r in rows],
@@ -71,6 +63,28 @@ async def recs_history(symbols: str, interval: str = "60m", points: int = 48):
                 "score":  [float(r[2]) if r[2] is not None else None for r in rows],
             }
     return {"interval": interval, "points": points, "series": out}
+
+@app.post("/recs/snapshot_now")
+async def recs_snapshot_now(interval: str = "60m", symbols: str | None = None, limit: int = 300):
+    # compute once and persist rows now
+    from .recs import _compute_once as compute_once  # uses mexc + ta_summary
+    from .db import SessionLocal, RecPoint
+
+    syms = [s.strip().upper() for s in (symbols or os.getenv("UNIVERSE","")).split(",") if s.strip()]
+    if not syms:
+        syms = ["BTCUSDT","ETHUSDT","SOLUSDT","SUIUSDT"]
+
+    snap = await compute_once(interval, syms, limit)
+    async with SessionLocal() as s:
+        objs = [RecPoint(
+            symbol=r["symbol"], interval=interval, price=r.get("price"), score=r.get("score"),
+            rsi14=r.get("rsi14"), macd_hist=r.get("macd_hist"), change24h=r.get("change24h"),
+            recommendation=r.get("recommendation"), reasons=r.get("reasons") or []
+        ) for r in snap.get("results", [])]
+        if objs:
+            s.add_all(objs)
+            await s.commit()
+    return {"inserted": len(snap.get("results", []))}
 
 @app.post("/runs")
 async def create_run(req: RunCreate):
