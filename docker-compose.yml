@@ -1,0 +1,45 @@
+version: "3.9"
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: aiagent
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: agentpw
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d aiagent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  agent:
+    build: ./agent
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      DATABASE_URL: postgresql+asyncpg://agent:agentpw@db:5432/aiagent
+      ALLOWLIST: api.github.com,example.com
+      MAX_STEPS: "8"
+      MODEL_NAME: qwen2.5
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./agent:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+
+volumes:
+  ollama:
+  pgdata:
