@@ -44,6 +44,56 @@
     </div>
   </div>
 
+<div class="mt-6 bg-neutral-900/70 border border-neutral-800 rounded-lg p-4">
+  <div class="flex flex-wrap items-end gap-3 mb-3">
+    <h2 class="font-semibold mr-auto">Market Recommendations</h2>
+
+    <label class="text-sm">
+      Interval
+      <select id="rec-interval" class="ml-2 bg-neutral-950 border border-neutral-800 rounded px-2 py-1">
+        <option value="1m">1m</option>
+        <option value="5m">5m</option>
+        <option value="15m">15m</option>
+        <option value="30m">30m</option>
+        <option value="60m" selected>60m</option>
+        <option value="4h">4h</option>
+        <option value="1d">1d</option>
+        <option value="1W">1W</option>
+        <option value="1M">1M</option>
+      </select>
+    </label>
+
+    <label class="text-sm">
+      Symbols (optional)
+      <input id="rec-symbols" placeholder="BTCUSDT,ETHUSDT"
+             class="ml-2 bg-neutral-950 border border-neutral-800 rounded px-2 py-1"/>
+    </label>
+
+    <button id="rec-refresh"
+            class="px-3 py-2 rounded bg-orange-500 hover:bg-orange-600 font-semibold">Refresh</button>
+    <span id="rec-status" class="text-sm text-neutral-400"></span>
+  </div>
+
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-neutral-300">
+        <tr class="border-b border-neutral-800">
+          <th class="text-left py-2 pr-4">Symbol</th>
+          <th class="text-left py-2 pr-4">Price</th>
+          <th class="text-left py-2 pr-4">24h %</th>
+          <th class="text-left py-2 pr-4">RSI14</th>
+          <th class="text-left py-2 pr-4">MACD Hist</th>
+          <th class="text-left py-2 pr-4">Score</th>
+          <th class="text-left py-2 pr-4">Recommendation</th>
+          <th class="text-left py-2 pr-4">Reasons</th>
+        </tr>
+      </thead>
+      <tbody id="rec-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+
   <script>
     const logEl = document.getElementById('log');
     const statusEl = document.getElementById('status');
@@ -82,5 +132,72 @@
       ws.onclose = () => addLine({ type: 'ws', msg: 'closed' });
     };
   </script>
+
+<script>
+  function badge(text, kind) {
+    const base = "px-2 py-1 text-xs font-semibold rounded";
+    const map = {
+      BUY: "bg-green-600/70 text-white",
+      ACCUMULATE: "bg-emerald-600/70 text-white",
+      HOLD: "bg-neutral-700/70 text-neutral-100",
+      "AVOID/SELL": "bg-red-600/80 text-white",
+      UNKNOWN: "bg-neutral-700/70 text-neutral-100"
+    };
+    return `<span class="${base} ${map[kind] || map.UNKNOWN}">${text}</span>`;
+  }
+
+  function changeFmt(v) {
+    if (v === null || v === undefined || isNaN(v)) return "—";
+    const s = Number(v).toFixed(2);
+    const cls = v > 0 ? "text-green-400" : (v < 0 ? "text-red-400" : "text-neutral-300");
+    return `<span class="${cls}">${s}%</span>`;
+  }
+
+  async function loadRecs() {
+    const interval = document.getElementById('rec-interval').value;
+    const symbols = document.getElementById('rec-symbols').value.trim();
+    const status = document.getElementById('rec-status');
+    const tbody = document.getElementById('rec-tbody');
+
+    status.textContent = 'Loading…';
+    tbody.innerHTML = '';
+
+    const qs = new URLSearchParams({ interval });
+    if (symbols) qs.set('symbols', symbols);
+
+    const res = await fetch(`/recommendations?${qs.toString()}`);
+    const data = await res.json();
+
+    // errors (non-fatal)
+    if ((data.errors || []).length) {
+      console.warn('Errors:', data.errors);
+    }
+
+    (data.results || []).forEach(r => {
+      const rec = r.recommendation || 'UNKNOWN';
+      const tr = document.createElement('tr');
+      tr.className = "border-b border-neutral-900 hover:bg-neutral-900/40";
+
+      tr.innerHTML = `
+        <td class="py-2 pr-4 font-mono">${r.symbol}</td>
+        <td class="py-2 pr-4">${r.price?.toFixed ? r.price.toFixed(6) : r.price ?? "—"}</td>
+        <td class="py-2 pr-4">${changeFmt(r.change24h)}</td>
+        <td class="py-2 pr-4">${r.rsi14?.toFixed ? r.rsi14.toFixed(1) : "—"}</td>
+        <td class="py-2 pr-4">${r.macd_hist?.toFixed ? r.macd_hist.toFixed(6) : "—"}</td>
+        <td class="py-2 pr-4">${r.score?.toFixed ? r.score.toFixed(2) : "—"}</td>
+        <td class="py-2 pr-4">${badge(rec, rec)}</td>
+        <td class="py-2 pr-4 text-neutral-300">${(r.reasons||[]).join("; ") || "—"}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+
+    status.textContent = `as of ${new Date(data.as_of || Date.now()).toLocaleTimeString()}, ${data.results?.length||0} symbols`;
+  }
+
+  document.getElementById('rec-refresh').onclick = loadRecs;
+  // auto-load on first open
+  loadRecs();
+</script>
+
 </body>
 </html>
