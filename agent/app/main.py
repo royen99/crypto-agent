@@ -13,7 +13,7 @@ from .agent_loop import run_agent
 from .ws import ws_manager
 from . import mexc
 from .ta import ta_summary
-from .recs import recs_loop, get_latest
+from .recs import recs_loop, get_latest, get_meta
 
 import datetime as dt
 
@@ -63,6 +63,21 @@ async def recs_history(symbols: str, interval: str = "60m", points: int = 48):
                 "score":  [float(r[2]) if r[2] is not None else None for r in rows],
             }
     return {"interval": interval, "points": points, "series": out}
+
+@app.get("/recs/status")
+async def recs_status():
+    latest = get_latest()
+    meta = get_meta()
+    return {
+        "enabled": os.getenv("REC_ENABLED","true").lower()=="true",
+        "interval": os.getenv("REC_INTERVAL","60m"),
+        "period_sec": int(os.getenv("REC_PERIOD_SEC","60")),
+        "symbols_env": os.getenv("REC_SYMBOLS") or os.getenv("UNIVERSE"),
+        "last_push_at": meta["last_push_at"],
+        "last_count": meta["last_count"],
+        "cache_present": bool(latest),
+        "cache_as_of": latest.get("as_of") if latest else None,
+    }
 
 @app.post("/recs/snapshot_now")
 async def recs_snapshot_now(interval: str = "60m", symbols: str | None = None, limit: int = 300):

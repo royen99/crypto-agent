@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os, asyncio, datetime as dt
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from . import mexc
 from .ta import ta_summary
@@ -8,6 +9,8 @@ from .db import SessionLocal, RecPoint
 # in-memory cache
 LATEST: Optional[dict] = None
 PREV: Optional[dict] = None
+LAST_PUSH_AT = None
+LAST_COUNT = 0
 
 def _symbols_from_env() -> list[str]:
     raw = os.getenv("REC_SYMBOLS", "").strip() or os.getenv("UNIVERSE", "")
@@ -61,6 +64,9 @@ async def _compute_once(interval: str, symbols: list[str], limit: int) -> dict:
         "errors": err,
     }
 
+def get_meta():
+    return {"last_push_at": LAST_PUSH_AT, "last_count": LAST_COUNT}
+
 def _apply_deltas(cur: dict, prev: Optional[dict]) -> dict:
     if not prev:
         return cur
@@ -97,6 +103,8 @@ async def recs_loop(broadcast):
             snap = await _compute_once(interval, symbols, limit)
             snap = _apply_deltas(snap, PREV)
             PREV, LATEST = LATEST, snap
+            LAST_PUSH_AT = datetime.now(timezone.utc).isoformat()
+            LAST_COUNT = len(snap.get("results", []))
 
             # optional persistence (simple append of whole snapshot)
             if persist:

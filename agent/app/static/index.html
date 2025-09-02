@@ -99,6 +99,7 @@
   <script>
     const logEl = document.getElementById('log');
     const statusEl = document.getElementById('status');
+    let lastRecsAt = 0; 
 
     function addLine(obj) {
       const t = new Date().toLocaleTimeString();
@@ -126,13 +127,25 @@
       const ws = new WebSocket(`${proto}://${location.host}/ws/runs/${runId}`);
       ws.onopen = () => addLine({ type: 'ws', msg: 'connected' });
       ws.onmessage = (ev) => {
+      try {
         const msg = JSON.parse(ev.data);
-        addLine(msg);
-        if (msg.type === 'final') statusEl.textContent = '✅ finished';
-        if (msg.type === 'error') statusEl.textContent = '⚠️ error';
+        if (msg.type === 'recs' && msg.data) {
+        lastRecsAt = Date.now();
+        renderRecs(msg.data);
+        }
+      } catch {}
       };
       ws.onclose = () => addLine({ type: 'ws', msg: 'closed' });
     };
+
+    setInterval(async () => {
+    const age = Date.now() - lastRecsAt;
+    if (age > 70_000) { // ~10s grace over your 60s loop
+        // console.warn('[recs] WS stale, fallback poll /recommendations');
+        await loadRecs(); // this calls /recommendations then refreshSparklines()
+    }
+    }, 15_000);
+
   </script>
 
 <script>
