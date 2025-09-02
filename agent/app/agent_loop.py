@@ -4,6 +4,8 @@ import os, json, asyncio
 from urllib.parse import urlparse
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
+from . import mexc
+from .ta import ta_summary
 from .db import SessionLocal, Run, RunStatus, add_event, Memory
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
@@ -12,14 +14,26 @@ MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
 ALLOWLIST = {h.strip() for h in os.getenv("ALLOWLIST", "api.github.com,example.com").split(",") if h.strip()}
 
 SYSTEM_PROMPT = """You are an autonomous but cautious agent.
-You must respond ONLY with JSON objects, no extra text.
-Two formats:
+Respond ONLY with JSON objects, no extra text.
+
+Formats:
 - {"type":"tool","name":"<tool>","args":{...}}
 - {"type":"final","answer":"..."}
+
 Available tools:
 - http_get(url): GET from allowlisted domains (no auth). Return short text.
 - write_note(key, text, tags?): store memory.
-Think step-by-step; if a tool fails, try a different approach or finalize gracefully.
+
+# MEXC market tools (Spot, public):
+- mexc_list_usdt(): list online USDT spot symbols.
+- mexc_klines(symbol, interval="1h", limit=200): recent candles.
+- mexc_ta(symbol, interval="1h", limit=300): compute indicators & recommendation.
+
+Rules:
+- Do NOT place orders; provide recommendations only.
+- Prefer intervals among: 1m,5m,15m,30m,1h,4h,1d.
+- Keep outputs concise JSON.
+If a tool fails, try a different approach or finalize gracefully.
 """
 
 async def call_ollama(messages: list[dict]) -> dict:
@@ -78,6 +92,12 @@ async def run_agent(run_id: str, ws_broadcast):
                         result = await tool_http_get(args.get("url",""))
                     elif name == "write_note":
                         result = await tool_write_note(session, args.get("key",""), args.get("text",""), args.get("tags"))
+                    elif name == "mexc_list_usdt":
+                        result = await tool_mexc_list_usdt()
+                    elif name == "mexc_klines":
+                        result = await tool_mexc_klines(args.get("symbol",""), args.get("interval","1h"), int(args.get("limit",200)))
+                    elif name == "mexc_ta":
+                        result = await tool_mexc_ta(args.get("symbol",""), args.get("interval","1h"), int(args.get("limit",300)))
                     else:
                         result = {"error": "unknown tool"}
 
@@ -110,3 +130,44 @@ async def run_agent(run_id: str, ws_broadcast):
             await session.commit()
             await add_event(session, run.id, 0, "error", {"msg": str(e)})
             await ws_broadcast(run.id, {"type":"error","step":0,"data":{"msg":str(e)}})
+
+async def tool_mexc_list_usdt() -> dict:
+    syms = await mexc.list_usdt_symbols(online_only=True)
+    # Optionally filter by UNIVERSE env
+    universe_env = os.getenv("UNIVERSE", "")
+    if universe_env.strip():
+        uni = {x.strip().upper() for x in universe_env.split(",")}
+        syms = [s for s in syms if s in uni]
+    return {"symbols": syms}
+
+async def tool_mexc_klines(symbol: str, interval: str="1h", limit: int=200) -> dict:
+    df = await mexc.klines(symbol.upper(), interval=interval, limit=limit)
+    # Return a compressed view to keep tokens lean:
+    tail = df.tail(5)
+    rows = [
+        {
+            "t_open": str(row.t_open),
+            "open": float(row.open),
+            "high": float(row.high),
+            "low": float(row.low),
+            "close": float(row.close),
+            "volume": float(row.volume),
+        } for row in tail.itertuples(index=False)
+    ]
+    return {"symbol": symbol.upper(), "interval": interval, "last": rows, "last_close": float(df["close"].iloc[-1])}
+
+async def tool_mexc_ta(symbol: str, interval: str="1h", limit: int=300) -> dict:
+    df = await mexc.klines(symbol.upper(), interval=interval, limit=limit)
+    summ = ta_summary(df)
+    # enrich with 24h change if possible
+    try:
+        t24 = await mexc.ticker24([symbol.upper()])
+        if t24 and isinstance(t24, list):
+            ch = t24[0].get("priceChangePercent")
+            if ch is not None:
+                summ["change24h"] = float(ch)
+    except Exception:
+        pass
+    summ["symbol"] = symbol.upper()
+    summ["interval"] = interval
+    return summ
