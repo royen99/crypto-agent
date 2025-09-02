@@ -22,7 +22,11 @@ class Run(Base):
     __tablename__ = "runs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)           # uuid str
     goal: Mapped[str] = mapped_column(Text)
-    status: Mapped[RunStatus] = mapped_column(Enum(RunStatus), default=RunStatus.queued, nullable=False)
+    status: Mapped[RunStatus] = mapped_column(
+        Enum(RunStatus, name="runstatus"),  # 🔸 match PG enum created in SQL
+        default=RunStatus.queued,
+        nullable=False
+    )
     final_answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -59,20 +63,3 @@ async def add_event(session: AsyncSession, run_id: str, step: int, etype: str, c
     await session.commit()
     await session.refresh(ev)
     return ev
-
-# from sqlalchemy import ... Enum, ...
-class RunStatus(str, enum.Enum):
-    queued = "queued"
-    running = "running"
-    success = "success"
-    error = "error"
-    stopped = "stopped"
-
-class Run(Base):
-    __tablename__ = "runs"
-    # ...
-    status: Mapped[RunStatus] = mapped_column(
-        Enum(RunStatus, name="runstatus"),  # 🔸 match PG enum created in SQL
-        default=RunStatus.queued,
-        nullable=False
-    )
