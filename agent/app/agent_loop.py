@@ -1,13 +1,14 @@
 # app/agent_loop.py
 from __future__ import annotations
-import os, json, asyncio
+import os, json, asyncio, time
 from urllib.parse import urlparse
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from . import mexc
 from .ta import ta_summary
 from .db import SessionLocal, Run, RunStatus, add_event, Memory
-from .mexc_signed import new_order as signed_new_order, query_order as signed_query
+from .mexc_signed import new_order as signed_new_order, account_info as signed_account_info, query_order as signed_query
+
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 MODEL = os.getenv("MODEL_NAME", "qwen2.5")
@@ -223,43 +224,60 @@ async def tool_mexc_ta(symbol: str, interval: str="60m", limit: int=300) -> dict
     return summ
 
 async def tool_mexc_price(symbol: str, interval: str = "60m") -> dict:
-    """Return last close for a symbol on a given interval."""
     df = await mexc.klines(symbol.upper(), interval=interval, limit=2)
-    price = float(df["close"].iloc[-1])
-    return {"symbol": symbol.upper(), "interval": interval, "price": price}
+    return {"symbol": symbol.upper(), "interval": interval, "price": float(df["close"].iloc[-1])}
+
 
 async def tool_mexc_buy(symbol: str,
                         budget_usdt: float | None = None,
                         price: float | None = None) -> dict:
-    """
-    Place a LIMIT BUY (TEST or LIVE based on env).
-    Respects tickSize/stepSize/minNotional and caps spend by MAX_USDT_PER_TRADE.
-    """
     trade_enabled = os.getenv("TRADE_ENABLED", "false").lower() == "true"
     test_only     = os.getenv("TRADE_TEST_ONLY", "true").lower() == "true"
     if not trade_enabled:
         return {"error": "Trading disabled (TRADE_ENABLED=false)."}
 
     mode = "test" if test_only else "live"
-    max_usdt = float(os.getenv("MAX_USDT_PER_TRADE", "50"))
-    budget = max_usdt if (budget_usdt is None) else float(budget_usdt)
-    # hard cap so the goal can't overrule your policy
-    budget = min(budget, max_usdt)
+    # policy caps
+    max_usdt   = float(os.getenv("MAX_USDT_PER_TRADE", "50"))
+    reserve_pc = float(os.getenv("BALANCE_RESERVE_PCT", "0.05"))
+    req_budget = max_usdt if (budget_usdt is None) else float(budget_usdt)
+    # never exceed policy cap
+    req_budget = min(req_budget, max_usdt)
 
-    # derive a price (last close) if not provided, then round to tick
+    # choose/round price
     if price is None:
         df = await mexc.klines(symbol.upper(), interval="60m", limit=2)
         price = float(df["close"].iloc[-1])
     price = await mexc.round_price(symbol, price)
 
-    # compute qty that meets stepSize/minQty/minNotional within budget
-    qty = await mexc.size_order(symbol, price, budget)
+    # LIVE: cap by available balance on the quote asset (USDT)
+    if not test_only:
+        try:
+            qa = await mexc.quote_asset(symbol)
+            acct = await signed_account_info()
+            bals = acct.get("balances", [])
+            free = 0.0
+            for b in bals:
+                if (b.get("asset") or "").upper() == qa.upper():
+                    free = float(b.get("free", 0))
+                    break
+            # keep a small reserve
+            avail = max(free * (1.0 - reserve_pc), 0.0)
+            if avail <= 0:
+                return {"error": f"Insufficient {qa} balance (free={free})."}
+            req_budget = min(req_budget, avail)
+        except Exception as e:
+            return {"error": f"Could not read account balance: {e}"}
+
+    # compute size respecting filters & minNotional within req_budget
+    qty = await mexc.size_order(symbol, price, req_budget)
     if qty <= 0:
         return {"error": "Budget too small for minNotional/stepSize."}
     qty = await mexc.round_qty(symbol, qty)
     if qty <= 0:
         return {"error": "Rounded qty fell below stepSize/minQty."}
 
+    # place order (TEST or LIVE)
     resp = await signed_new_order(
         symbol=symbol.upper(),
         side="BUY",
@@ -270,15 +288,15 @@ async def tool_mexc_buy(symbol: str,
         test=test_only,
         client_order_id=f"goalbuy_{int(time.time())}"
     )
-    return {"ok": True, "mode": mode, "symbol": symbol.upper(), "qty": qty, "price": price, "resp": resp}
+    return {
+        "ok": True, "mode": mode, "symbol": symbol.upper(),
+        "qty": qty, "price": price, "budget_used": price * qty,
+        "resp": resp
+    }
 
 async def tool_mexc_sell(symbol: str,
                          qty: float,
                          price: float | None = None) -> dict:
-    """
-    Place a LIMIT SELL (TEST or LIVE based on env).
-    Rounds price to tick and qty to step/minQty.
-    """
     trade_enabled = os.getenv("TRADE_ENABLED", "false").lower() == "true"
     test_only     = os.getenv("TRADE_TEST_ONLY", "true").lower() == "true"
     if not trade_enabled:
@@ -287,14 +305,34 @@ async def tool_mexc_sell(symbol: str,
     if qty is None or float(qty) <= 0:
         return {"error": "qty must be > 0"}
 
+    # choose/round price & qty to filters
     if price is None:
         df = await mexc.klines(symbol.upper(), interval="60m", limit=2)
         price = float(df["close"].iloc[-1])
-
     price = await mexc.round_price(symbol, price)
     qty   = await mexc.round_qty(symbol, float(qty))
     if qty <= 0:
         return {"error": "qty below stepSize/minQty after rounding."}
+
+    # LIVE: cap by available BASE asset qty (e.g., SOL for SOLUSDT)
+    if not test_only:
+        try:
+            ba, _ = await mexc.base_quote(symbol)
+            acct = await signed_account_info()
+            bals = acct.get("balances", [])
+            free = 0.0
+            for b in bals:
+                if (b.get("asset") or "").upper() == ba.upper():
+                    free = float(b.get("free", 0))
+                    break
+            if free <= 0:
+                return {"error": f"Insufficient {ba} balance (free={free})."}
+            if qty > free:
+                qty = await mexc.round_qty(symbol, free)  # reduce to available
+                if qty <= 0:
+                    return {"error": f"Available {ba} too small for stepSize/minQty."}
+        except Exception as e:
+            return {"error": f"Could not read account balance: {e}"}
 
     mode = "test" if test_only else "live"
     resp = await signed_new_order(
@@ -307,4 +345,8 @@ async def tool_mexc_sell(symbol: str,
         test=test_only,
         client_order_id=f"goalsell_{int(time.time())}"
     )
-    return {"ok": True, "mode": mode, "symbol": symbol.upper(), "qty": qty, "price": price, "resp": resp}
+    return {
+        "ok": True, "mode": mode, "symbol": symbol.upper(),
+        "qty": qty, "price": price, "notional": price * qty,
+        "resp": resp
+    }

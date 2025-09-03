@@ -221,3 +221,12 @@ async def size_order(symbol: str, price: float, budget_usdt: float) -> float:
     if q <= 0:
         return 0.0
     return float(q)
+
+async def base_quote(symbol: str) -> tuple[str, str]:
+    info = await _get_exchange_info()
+    bysym = {s["symbol"].upper(): s for s in (info.get("symbols") or [])}
+    o = bysym.get(symbol.upper()) or {}
+    return (o.get("baseAsset") or "BASE", o.get("quoteAsset") or "USDT")
+
+async def quote_asset(symbol: str) -> str:
+    return (await base_quote(symbol))[1]

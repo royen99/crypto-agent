@@ -84,3 +84,7 @@ async def _delete_signed(path:str, params:dict) -> dict:
         if r.status_code != 200:
             raise MexcTradeError(f"HTTP {r.status_code}: {r.text}")
         return r.json() if r.text else {}
+
+async def account_info():
+    # Spot account info: returns balances array with asset/free/locked
+    return await _get_signed("/api/v3/account", {})
