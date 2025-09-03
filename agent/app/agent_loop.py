@@ -32,8 +32,8 @@ Available tools:
 - mexc_sell(symbol, qty, price?)           # TEST limit sell (respects filters)
 
 Policy:
-- You MAY place TEST orders using mexc_buy/mexc_sell. These never execute live.
-- Assume TEST mode is enabled; if a tool reports live trading is disabled, finalize with a short explanation.
+- You MAY place TEST or LIVE orders using mexc_buy/mexc_sell.
+- If a tool reports live trading is disabled, finalize with a short explanation.
 - Prefer intervals: 1m,5m,15m,30m,60m,4h,1d.
 - If a tool fails, try an alternative or finalize gracefully.
 """
