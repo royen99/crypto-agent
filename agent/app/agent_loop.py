@@ -31,7 +31,6 @@ Available tools:
 - mexc_ta(symbol, interval="1h", limit=300): compute indicators & recommendation.
 
 Rules:
-- Do NOT place orders; provide recommendations only.
 - Prefer intervals: 1m,5m,15m,30m,60m,4h,1d,1W,1M.
 - Keep outputs concise JSON.
 If a tool fails, try a different approach or finalize gracefully.
