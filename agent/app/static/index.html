@@ -109,42 +109,42 @@
 
     document.getElementById('clearBtn').onclick = () => { logEl.textContent = ''; };
 
-    document.getElementById('startBtn').onclick = async () => {
-      const goal = document.getElementById('goal').value.trim();
-      if (!goal) return;
-      statusEl.textContent = 'Starting…';
+  document.getElementById('startBtn').onclick = async () => {
+    const goal = document.getElementById('goal').value.trim();
+    if (!goal) return;
+    statusEl.textContent = 'Starting…';
 
-      const res = await fetch('/runs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal })
-      });
-      const data = await res.json();
-      const runId = data.id;
-      statusEl.textContent = `Run ${runId} queued`;
+    const res = await fetch('/runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goal })
+    });
+    const data = await res.json();
+    const runId = data.id;
+    statusEl.textContent = `Run ${runId} queued`;
 
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(`${proto}://${location.host}/ws/runs/${runId}`);
-      ws.onopen = () => addLine({ type: 'ws', msg: 'connected' });
-      ws.onmessage = (ev) => {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws/runs/${runId}`);
+
+    ws.onopen = () => addLine({ type: 'ws', msg: 'connected' });
+
+    // ✅ Handle ALL run events, not just 'recs'
+    ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
-        if (msg.type === 'recs' && msg.data) {
-        lastRecsAt = Date.now();
-        renderRecs(msg.data);
-        }
-      } catch {}
-      };
-      ws.onclose = () => addLine({ type: 'ws', msg: 'closed' });
+        // log every message so you can see what's happening
+        addLine(msg);
+
+        // status sugar
+        if (msg.type === 'final') statusEl.textContent = '✅ finished';
+        if (msg.type === 'error') statusEl.textContent = '⚠️ error';
+      } catch (e) {
+        addLine({ type: 'json_error', error: String(e), raw: ev.data });
+      }
     };
 
-    setInterval(async () => {
-    const age = Date.now() - lastRecsAt;
-    if (age > 70_000) { // ~10s grace over your 60s loop
-        // console.warn('[recs] WS stale, fallback poll /recommendations');
-        await loadRecs(); // this calls /recommendations then refreshSparklines()
-    }
-    }, 15_000);
+    ws.onclose = () => addLine({ type: 'ws', msg: 'closed' });
+  };
 
   </script>
 
