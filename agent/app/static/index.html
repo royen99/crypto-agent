@@ -228,21 +228,39 @@
   document.getElementById('rec-refresh').onclick = loadRecs;
 
   // 🔌 subscribe to server-pushed snapshots
-  (function connectRecsWS() {
+    (function connectRecsWS() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/ws/recs`);
-    ws.onopen = () => console.log('[recs] ws connected');
-    ws.onmessage = (ev) => {
-      try {
+    const wsRecs = new WebSocket(`${proto}://${location.host}/ws/recs`);
+
+    wsRecs.onopen = () => addLine({ type: 'ws', msg: 'recs connected' });
+
+    wsRecs.onmessage = (ev) => {
+        try {
         const msg = JSON.parse(ev.data);
-        if (msg.type === 'recs' && msg.data) renderRecs(msg.data);
-      } catch {}
+
+        // snapshot updates for the table
+        if (msg.type === 'recs' && msg.data) {
+            lastRecsAt = Date.now();
+            renderRecs(msg.data);
+            return;
+        }
+
+        // surface trader loop messages in Live Log
+        if ((msg.type && msg.type.startsWith && msg.type.startsWith('trade_')) ||
+            msg.type === 'trade_error' || msg.type === 'recs_error') {
+            // optionally tag them so your addLine renderer can style differently
+            addLine({ channel: 'trader', ...msg });
+        }
+        } catch (e) {
+        addLine({ type: 'json_error', error: String(e), raw: ev.data });
+        }
     };
-    ws.onclose = () => {
-      console.warn('[recs] ws closed; retrying in 3s');
-      setTimeout(connectRecsWS, 3000);
+
+    wsRecs.onclose = () => {
+        addLine({ type: 'ws', msg: 'recs closed' });
+        setTimeout(connectRecsWS, 3000); // auto-retry
     };
-  })();
+    })();
 
   // initial fill (in case WS hasn’t pushed yet)
   loadRecs();
