@@ -8,6 +8,7 @@ from .db import SessionLocal, Position, MexcOrder
 
 TP_PCT = float(os.getenv("TP_PCT","0.02"))
 SL_PCT = float(os.getenv("SL_PCT","0.00"))         # 0 disables
+RESERVE_PCT   = float(os.getenv("BALANCE_RESERVE_PCT", "0.05"))
 MAX_USDT = float(os.getenv("MAX_USDT_PER_TRADE","50"))
 MAX_BUYS = int(os.getenv("MAX_OPEN_BUYS_PER_SYMBOL","1"))
 TRADE_ENABLED = os.getenv("TRADE_ENABLED","false").lower()=="true"
@@ -270,15 +271,15 @@ async def trader_loop(broadcast):
     while True:
         try:
             TRADER_LAST_ERR = None
-            before = time.time()
             actions = await trader_tick(symbols, interval="60m", broadcast=broadcast)
-            # ensure trader_tick returns an int of “actions taken”; see next patch
             TRADER_LAST_ACTIONS = int(actions or 0)
-            TRADER_LAST_TICK = datetime.now(timezone.utc).isoformat()
         except Exception as e:
             TRADER_LAST_ERR = str(e)
             try:
-                await broadcast("recs", {"type":"trade_error","error":TRADER_LAST_ERR})
+                await broadcast("recs", {"type":"trade_error", "error": TRADER_LAST_ERR})
             except Exception:
                 pass
+        finally:
+            from datetime import datetime, timezone
+            TRADER_LAST_TICK = datetime.now(timezone.utc).isoformat()
         await asyncio.sleep(15)
