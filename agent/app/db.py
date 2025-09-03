@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, enum, json, datetime as dt
+import os, enum, json, datetime as dt, math
 from typing import Optional
 from sqlalchemy import String, Text, JSON, Enum, Integer, func, text, ForeignKey, Float, DateTime, BigInteger, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, declarative_base, relationship
@@ -97,10 +97,27 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+def sanitize_json(obj):
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize_json(v) for v in obj]
+    # ints/str/bool/None are fine
+    return obj
+
 # helpers
 async def add_event(session: AsyncSession, run_id: str, step: int, etype: str, content: dict):
-    ev = RunEvent(run_id=run_id, step=step, type=etype, content=content)
+    safe = sanitize_json(content)
+    ev = RunEvent(run_id=run_id, step=step, type=etype, content=safe)
     session.add(ev)
-    await session.commit()
+    try:
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
     await session.refresh(ev)
     return ev

@@ -6,7 +6,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from . import mexc
 from .ta import ta_summary
-from .db import SessionLocal, Run, RunStatus, add_event, Memory
+from .db import SessionLocal, Run, RunStatus, add_event, Memory, sanitize_json
 from .mexc_signed import new_order as signed_new_order, account_info as signed_account_info, query_order as signed_query
 
 
@@ -149,8 +149,9 @@ async def run_agent(run_id: str, ws_broadcast):
                     else:
                         result = {"error": "unknown tool"}
 
-                    await add_event(session, run.id, step, "observation", {"tool": name, "result": result})
-                    await ws_broadcast(run.id, {"type":"observation","step":step,"data":{"tool":name,"result":result}})
+                    safe_result = sanitize_json(result)
+                    await add_event(session, run.id, step, "observation", {"tool": name, "result": safe_result})
+                    await ws_broadcast(run.id, {"type":"observation","step":step,"data":{"tool":name,"result":safe_result}})
 
                     messages.append({"role":"assistant","content":json.dumps(reply)})
                     messages.append({"role":"tool","content":json.dumps({"tool":name,"result":result})})
@@ -174,6 +175,7 @@ async def run_agent(run_id: str, ws_broadcast):
             await ws_broadcast(run.id, {"type":"error","step":MAX_STEPS,"data":{"msg":"Stopped due to max steps."}})
 
         except Exception as e:
+            await session.rollback()   # 🔸 important after a failed flush/commit
             run.status = RunStatus.error
             await session.commit()
             await add_event(session, run.id, 0, "error", {"msg": str(e)})

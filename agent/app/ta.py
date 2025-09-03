@@ -1,6 +1,15 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+import math
+
+def _sf(x):
+    """safe float → None for NaN/inf/None, else float"""
+    try:
+        v = float(x)
+    except Exception:
+        return None
+    return None if (math.isnan(v) or math.isinf(v)) else v
 
 def ema(series: pd.Series, span: int) -> pd.Series:
     return series.ewm(span=span, adjust=False).mean()
@@ -43,49 +52,42 @@ def ta_summary(df: pd.DataFrame) -> dict:
     a = atr(df, 14)
 
     latest = len(df)-1
-    price = float(close.iloc[latest])
+    price = _sf(close.iloc[latest])
     out = {
-        "price": price,
-        "ema20": float(ema20.iloc[latest]),
-        "ema50": float(ema50.iloc[latest]),
-        "ema200": float(ema200.iloc[latest]),
-        "rsi14": float(r.iloc[latest]),
-        "macd": float(m.iloc[latest]),
-        "macd_signal": float(s.iloc[latest]),
-        "macd_hist": float(h.iloc[latest]),
-        "atr14": float(a.iloc[latest]),
+        "price": _sf(close.iloc[latest]),
+        "ema20": _sf(ema20.iloc[latest]),
+        "ema50": _sf(ema50.iloc[latest]),
+        "ema200": _sf(ema200.iloc[latest]),
+        "rsi14": _sf(r.iloc[latest]),
+        "macd": _sf(m.iloc[latest]),
+        "macd_signal": _sf(s.iloc[latest]),
+        "macd_hist": _sf(h.iloc[latest]),
+        "atr14": _sf(a.iloc[latest]),
     }
+    reasons, score = [], 0.0
 
-    reasons = []
-    score = 0
+    def gt(a, b): return (a is not None) and (b is not None) and (a > b)
 
-    if out["ema20"] > out["ema50"]: score += 1; reasons.append("EMA20>EMA50 (short-term uptrend)")
-    if out["ema50"] > out["ema200"]: score += 1; reasons.append("EMA50>EMA200 (medium uptrend)")
-    if out["macd"] > out["macd_signal"]: score += 1; reasons.append("MACD>signal (bullish momentum)")
-    if out["macd_hist"] > 0: score += 0.5
-    if 45 <= out["rsi14"] <= 65: score += 0.5; reasons.append("RSI in neutral power zone")
-    if out["rsi14"] < 35: score -= 1; reasons.append("RSI oversold risks")
-    if out["rsi14"] > 70: score -= 1; reasons.append("RSI overbought risks")
+    if gt(out["ema20"], out["ema50"]): score += 1; reasons.append("EMA20>EMA50 (short-term uptrend)")
+    if gt(out["ema50"], out["ema200"]): score += 1; reasons.append("EMA50>EMA200 (medium uptrend)")
+    if gt(out["macd"], out["macd_signal"]): score += 1; reasons.append("MACD>signal (bullish momentum)")
+    if out["macd_hist"] is not None and out["macd_hist"] > 0: score += 0.5
+    if out["rsi14"] is not None and 45 <= out["rsi14"] <= 65: score += 0.5; reasons.append("RSI in neutral power zone")
+    if out["rsi14"] is not None and out["rsi14"] < 35: score -= 1; reasons.append("RSI oversold risks")
+    if out["rsi14"] is not None and out["rsi14"] > 70: score -= 1; reasons.append("RSI overbought risks")
 
-    # volatility sanity: price/atr
-    if out["atr14"] > 0:
-        vol_ratio = price / out["atr14"]
-        out["atr_ratio"] = float(vol_ratio)
-        if vol_ratio < 40: score -= 0.5; reasons.append("High volatility (ATR ratio low)")
+    if out["atr14"] and price:
+        vr = price / out["atr14"] if out["atr14"] != 0 else None
+        out["atr_ratio"] = _sf(vr)
+        if out["atr_ratio"] is not None and out["atr_ratio"] < 40:
+            score -= 0.5; reasons.append("High volatility (ATR ratio low)")
     else:
         out["atr_ratio"] = None
 
-    # map score -> recommendation
-    if score >= 2.5:
-        rec = "BUY"
-    elif score >= 1:
-        rec = "ACCUMULATE"
-    elif score <= -1:
-        rec = "AVOID/SELL"
-    else:
-        rec = "HOLD"
-
-    out["score"] = float(score)
-    out["recommendation"] = rec
+    out["score"] = _sf(score)
+    out["recommendation"] = "BUY" if (out["score"] is not None and out["score"] >= 2.5) else \
+                            "ACCUMULATE" if (out["score"] is not None and out["score"] >= 1) else \
+                            "AVOID/SELL" if (out["score"] is not None and out["score"] <= -1) else \
+                            "HOLD"
     out["reasons"] = reasons
     return out
