@@ -24,13 +24,18 @@ def _sign(params: dict) -> str:
 async def _post_signed(path: str, params: dict) -> dict:
     if not KEY or not SEC:
         raise MexcTradeError("Missing API key/secret")
-    ts = int(time.time()*1000)
+    ts = int(time.time() * 1000)
     params.setdefault("timestamp", ts)
     params.setdefault("recvWindow", 5000)
-    body = _sign(params)
-    headers = {"X-MEXC-APIKEY": KEY, "Content-Type": "application/x-www-form-urlencoded"}
+
+    # Build query, sign it, and send as QUERY PARAMS (not body).
+    qs = urlencode(params, safe=",")
+    sig = hmac.new(SEC.encode(), qs.encode(), hashlib.sha256).hexdigest()
+    headers = {"X-MEXC-APIKEY": KEY}  # no Content-Type needed when no body
+
+    url = f"{BASE}{path}"
     async with httpx.AsyncClient(timeout=10.0) as c:
-        r = await c.post(f"{BASE}{path}", content=body, headers=headers)
+        r = await c.post(url, params={**params, "signature": sig}, headers=headers)
         if r.status_code != 200:
             raise MexcTradeError(f"HTTP {r.status_code}: {r.text}")
         return r.json() if r.text else {}
