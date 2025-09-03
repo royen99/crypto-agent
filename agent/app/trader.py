@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime, timezone
 import os, math, asyncio, time
 from . import mexc
 from .ta import atr 
@@ -18,12 +19,24 @@ VOL_RATIO_MIN = float(os.getenv("VOL_RATIO_MIN","40"))
 MAKER_FRAC = float(os.getenv("MAKER_BPS","0"))/10000.0
 TAKER_FRAC = float(os.getenv("TAKER_BPS","5"))/10000.0
 
+TRADER_LAST_TICK = None
+TRADER_LAST_ERR = None
+TRADER_LAST_ACTIONS = 0
+
 def _qty_for_budget(price: float) -> float:
     if price <= 0: return 0.0
-    # assume quantity step 0.0001; you can refine using exchangeInfo filters later
     q = MAX_USDT / price
-    # round down to 4 decimals
     return math.floor(q * 10000) / 10000.0
+
+def trader_get_status():
+    return {
+        "last_tick_at": TRADER_LAST_TICK,
+        "last_error": TRADER_LAST_ERR,
+        "last_actions": TRADER_LAST_ACTIONS,
+        "mode": "test" if TEST_ONLY else "live",
+        "period_sec": 15,
+        "trade_enabled": TRADE_ENABLED,
+    }
 
 def _tp_price(buy_price: float,
               maker_fee: float = MAKER_FRAC,
@@ -31,15 +44,34 @@ def _tp_price(buy_price: float,
     return buy_price * (1.0 + maker_fee) * (1.0 + TP_PCT) / (1.0 - taker_fee)
 
 async def _is_tradable(symbol: str) -> tuple[bool, dict]:
+    """
+    MEXC exchangeInfo may return status as "1" (online), "ENABLED", "TRADING", etc.
+    The reliable gate is isSpotTradingAllowed. tradeSideType: "1"=all, "2"=buy-only, "3"=sell-only, "4"=close. 
+    We allow entries if: online-ish AND isSpotTradingAllowed AND buy is allowed.
+    """
     info = await mexc.exchange_info([symbol.upper()])
     arr = info.get("symbols") or []
     if not arr:
         return False, {"reason": "unknown symbol"}
+
     s = arr[0]
-    ok = str(s.get("status")) == "1" and bool(s.get("isSpotTradingAllowed", False))
+    status_raw = s.get("status")
+    status_str = str(status_raw).upper() if status_raw is not None else ""
+    online_ok = status_str in {"1", "ENABLED", "TRADING", "ONLINE", "OPEN"} or status_raw == 1
+
+    spot_ok = s.get("isSpotTradingAllowed")
+    if spot_ok is None:
+        # docs say this field exists, but if missing, assume True
+        spot_ok = True
+
+    trade_side = str(s.get("tradeSideType", "1"))
+    buy_allowed = trade_side in ("1", "2")
+
+    ok = bool(online_ok and spot_ok and buy_allowed)
     return ok, {
-        "status": s.get("status"),
+        "status": status_raw,
         "isSpotTradingAllowed": s.get("isSpotTradingAllowed"),
+        "tradeSideType": s.get("tradeSideType"),
         "base": s.get("baseAsset"),
         "quote": s.get("quoteAsset"),
     }
@@ -250,12 +282,21 @@ async def trader_tick(symbols: list[str], interval: str = "60m", broadcast=None)
                     continue
 
 async def trader_loop(broadcast):
-    # reuse same symbol source as recs loop
     from .recs import _symbols_from_env
     symbols = _symbols_from_env()
+    global TRADER_LAST_TICK, TRADER_LAST_ERR, TRADER_LAST_ACTIONS
     while True:
         try:
-            await trader_tick(symbols)
+            TRADER_LAST_ERR = None
+            before = time.time()
+            actions = await trader_tick(symbols, interval="60m", broadcast=broadcast)
+            # ensure trader_tick returns an int of “actions taken”; see next patch
+            TRADER_LAST_ACTIONS = int(actions or 0)
+            TRADER_LAST_TICK = datetime.now(timezone.utc).isoformat()
         except Exception as e:
-            await broadcast("recs", {"type":"trade_error","error":str(e)})
-        await asyncio.sleep(15)  # light touch; we only act when state warrants
+            TRADER_LAST_ERR = str(e)
+            try:
+                await broadcast("recs", {"type":"trade_error","error":TRADER_LAST_ERR})
+            except Exception:
+                pass
+        await asyncio.sleep(15)
