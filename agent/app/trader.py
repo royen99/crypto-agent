@@ -185,16 +185,25 @@ async def trader_tick(symbols: list[str], interval: str = "60m", broadcast=None)
 
                 try:
                     # place BUY
+                    coid = f"botbuy_{int(time.time())}"
                     resp = await new_order(
                         symbol=sym, side="BUY", order_type="LIMIT",
                         quantity=qty, price=price_r, tif="GTC", test=TEST_ONLY,
-                        client_order_id=f"botbuy_{int(time.time())}"
+                        client_order_id=coid
                     )
                     actions += 1
-                    s.add(MexcOrder(symbol=sym, side="BUY", type="LIMIT",
-                                    price=price_r, qty=qty,
-                                    status="NEW", is_test=TEST_ONLY,
-                                    mexc_order_id=resp.get("orderId") if isinstance(resp, dict) else None))
+
+                    order_id = None
+                    if isinstance(resp, dict):
+                        order_id = str(resp.get("orderId") or "")
+                    s.add(MexcOrder(
+                        symbol=sym, side="BUY", type="LIMIT",
+                        client_order_id=coid,
+                        mexc_order_id=order_id or None,
+                        price=price_r, qty=qty,
+                        status=(resp.get("status") if isinstance(resp, dict) else "NEW") or "NEW",
+                        is_test=TEST_ONLY
+                    ))
                     if TEST_ONLY:
                         # assume immediate fill in test
                         pos.qty = qty
@@ -237,26 +246,50 @@ async def trader_tick(symbols: list[str], interval: str = "60m", broadcast=None)
                         if qty <= 0:
                             continue
 
+                coid = f"botsell_{int(time.time())}"  # client order id we control
                 try:
                     resp = await new_order(
                         symbol=sym, side="SELL", order_type="LIMIT",
                         quantity=qty, price=tp, tif="GTC", test=TEST_ONLY,
-                        client_order_id=f"botsell_{int(time.time())}"
+                        client_order_id=coid
                     )
                     actions += 1
-                    s.add(MexcOrder(symbol=sym, side="SELL", type="LIMIT",
-                                    price=tp, qty=qty,
-                                    status="NEW", is_test=TEST_ONLY,
-                                    mexc_order_id=resp.get("orderId") if isinstance(resp, dict) else None))
-                    pos.state = "closing" if not TEST_ONLY else "closing"
-                    pos.last_sell_order = resp.get("orderId") if isinstance(resp, dict) else None
+
+                    # MEXC orderId is a string (e.g., "C02__5919..."); store it as text
+                    order_id = None
+                    if isinstance(resp, dict) and resp.get("orderId"):
+                        order_id = str(resp["orderId"])
+
+                    s.add(MexcOrder(
+                        symbol=sym, side="SELL", type="LIMIT",
+                        client_order_id=coid,
+                        mexc_order_id=order_id,
+                        price=tp, qty=qty,
+                        status=(resp.get("status") if isinstance(resp, dict) else "NEW") or "NEW",
+                        is_test=TEST_ONLY
+                    ))
+                    pos.state = "closing"
+                    pos.last_sell_order = order_id or coid
                     await s.commit()
+
                     if broadcast:
-                        await broadcast("recs", {"type":"trade_sell_tp_placed","symbol":sym,"tp":tp,"qty":qty,"mode":"test" if TEST_ONLY else "live"})
+                        await broadcast("recs", {
+                            "type": "trade_sell_tp_placed",
+                            "symbol": sym,
+                            "tp": tp,
+                            "qty": qty,
+                            "order_id": order_id or coid,
+                            "mode": "test" if TEST_ONLY else "live"
+                        })
+
                 except MexcTradeError as e:
-                    s.add(MexcOrder(symbol=sym, side="SELL", type="LIMIT",
-                                    price=tp, qty=qty,
-                                    status="REJECTED", is_test=TEST_ONLY, error=str(e)))
+                    s.add(MexcOrder(
+                        symbol=sym, side="SELL", type="LIMIT",
+                        client_order_id=coid,
+                        mexc_order_id=None,
+                        price=tp, qty=qty,
+                        status="REJECTED", is_test=TEST_ONLY, error=str(e)
+                    ))
                     await s.commit()
                     if broadcast:
                         await broadcast("recs", {"type":"trade_error","symbol":sym,"error":str(e)})

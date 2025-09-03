@@ -64,14 +64,14 @@ async def new_order(symbol:str, side:str, order_type:str, quantity:float, price:
     if client_order_id: p["newClientOrderId"] = client_order_id
     return await _post_signed(path, p)
 
-async def query_order(symbol:str, order_id:int|None=None, client_order_id:str|None=None):
-    p = {"symbol":symbol}
+async def query_order(symbol: str, order_id: str | None = None, client_order_id: str | None = None):
+    p = {"symbol": symbol}
     if order_id is not None: p["orderId"] = order_id
     if client_order_id is not None: p["origClientOrderId"] = client_order_id
     return await _get_signed("/api/v3/order", p)
 
-async def cancel_order(symbol:str, order_id:int|None=None, client_order_id:str|None=None):
-    p = {"symbol":symbol}
+async def cancel_order(symbol: str, order_id: str | None = None, client_order_id: str | None = None):
+    p = {"symbol": symbol}
     if order_id is not None: p["orderId"] = order_id
     if client_order_id is not None: p["origClientOrderId"] = client_order_id
     return await _delete_signed("/api/v3/order", p)

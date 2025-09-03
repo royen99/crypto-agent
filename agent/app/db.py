@@ -17,8 +17,8 @@ class MexcOrder(Base):
     symbol: Mapped[str] = mapped_column(String(20), index=True)
     side: Mapped[str] = mapped_column(String(4))
     type: Mapped[str] = mapped_column(String(10))
-    client_order_id: Mapped[str | None] = mapped_column(String(64))
-    mexc_order_id: Mapped[int | None] = mapped_column(BigInteger)
+    client_order_id: Mapped[str | None] = mapped_column(String(128))
+    mexc_order_id: Mapped[str | None] = mapped_column(String(128), index=True)  # ← string
     price: Mapped[float | None] = mapped_column(Float)
     qty: Mapped[float | None] = mapped_column(Float)
     status: Mapped[str | None] = mapped_column(String(24), index=True)
@@ -35,8 +35,8 @@ class Position(Base):
     state: Mapped[str] = mapped_column(String(16), default="flat")
     target_price: Mapped[float | None] = mapped_column(Float)
     stop_price: Mapped[float | None] = mapped_column(Float)
-    last_buy_order: Mapped[int | None] = mapped_column(BigInteger)
-    last_sell_order: Mapped[int | None] = mapped_column(BigInteger)
+    last_buy_order: Mapped[str | None] = mapped_column(String(128))   # ← string
+    last_sell_order: Mapped[str | None] = mapped_column(String(128))  # ← string
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 class RecPoint(Base):
