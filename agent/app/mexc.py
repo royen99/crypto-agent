@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os, asyncio, time
 from typing import List, Dict, Any, Tuple
-import httpx
+import httpx, time
 import pandas as pd
 from decimal import Decimal, ROUND_DOWN, ROUND_UP, getcontext
 
@@ -34,15 +34,14 @@ async def _get(path: str, params: dict|None=None) -> Any:
             raise MexcError(f"HTTP {r.status_code}: {r.text[:300]}")
         return r.json()
 
-async def exchange_info(symbols: list[str]|None=None) -> dict:
+async def exchange_info(symbols: list[str] | str | None = None) -> dict:
     # /api/v3/exchangeInfo supports no param, symbol, or symbols
     params = None
-    if symbols is None:
-        params = None
-    elif len(symbols) == 1:
-        params = {"symbol": symbols[0]}
-    else:
-        params = {"symbols": ",".join(symbols)}
+    if symbols:
+        if isinstance(symbols, list):
+            params = {"symbols": ",".join(s.upper() for s in symbols)}
+        else:
+            params = {"symbols": str(symbols).upper()}
     return await _get("/api/v3/exchangeInfo", params)
 
 async def list_usdt_symbols(online_only: bool=True) -> list[str]:
@@ -62,6 +61,10 @@ async def list_usdt_symbols(online_only: bool=True) -> list[str]:
             continue
     return sorted(out)
 
+_EXINFO_CACHE = None
+_EXINFO_AT = 0
+_EXINFO_TTL = 300
+
 def _as_dec(x, default="0"):
     try:
         return Decimal(str(x))
@@ -77,51 +80,74 @@ async def _get_exchange_info():
     _EXINFO_CACHE, _EXINFO_AT = info, now
     return info
 
+# cache per symbol
+_SYMBOL_FILTERS: dict[str, dict] = {}
+
 def _parse_symbol_filters(sym_obj: dict) -> dict:
     """
-    Return {'tickSize', 'stepSize', 'minQty', 'minNotional'} as Decimals (or None).
-    MEXC uses Binance-like filters; accept both camel/lower.
+    Return {'tickSize','stepSize','minQty','minNotional'} as Decimals or None.
+    If 'filters' is empty, fall back to baseSizePrecision/quotePrecision fields.
     """
-    res = {"tickSize": None, "minPrice": None, "stepSize": None, "minQty": None, "minNotional": None}
+    res = {"tickSize": None, "stepSize": None, "minQty": None, "minNotional": None}
+
+    # 1) Preferred: filters[]
     filters = sym_obj.get("filters") or []
     for f in filters:
         ftype = (f.get("filterType") or f.get("type") or f.get("name") or "").upper()
-        # price filter
         if "PRICE" in ftype:
-            res["minPrice"] = _as_dec(f.get("minPrice"))
-            res["tickSize"] = _as_dec(f.get("tickSize", "0"))
-        # lot size
+            res["tickSize"] = _as_dec(f.get("tickSize"))
         if "LOT" in ftype or "QUANTITY" in ftype:
-            res["minQty"] = _as_dec(f.get("minQty"))
-            res["stepSize"] = _as_dec(f.get("stepSize", "0"))
-        # min notional
+            res["stepSize"] = _as_dec(f.get("stepSize"))
+            if f.get("minQty") is not None:
+                res["minQty"] = _as_dec(f.get("minQty"))
         if "NOTIONAL" in ftype:
             res["minNotional"] = _as_dec(f.get("minNotional"))
-    # some APIs lowercase filter objects:
-    if not filters and "priceFilter" in sym_obj:
-        pf = sym_obj.get("priceFilter") or {}
-        res["minPrice"] = _as_dec(pf.get("minPrice"))
-        res["tickSize"] = _as_dec(pf.get("tickSize"))
-        lf = sym_obj.get("lotSize") or {}
-        res["minQty"] = _as_dec(lf.get("minQty"))
-        res["stepSize"] = _as_dec(lf.get("stepSize"))
-        mn = sym_obj.get("minNotional") or {}
-        res["minNotional"] = _as_dec(mn.get("minNotional"))
-    return res
 
-_SYMBOL_FILTERS: dict[str, dict] = {}
+    # 2) Fallbacks when filters are missing/empty
+    if not filters:
+        # stepSize from baseSizePrecision if present
+        bsp = sym_obj.get("baseSizePrecision")
+        if bsp is not None:
+            # can be "0.01" or numeric
+            try:
+                res["stepSize"] = _as_dec(bsp)
+            except Exception:
+                pass
+        # else from baseAssetPrecision (digits -> 10^-digits)
+        if res["stepSize"] in (None, Decimal("0")):
+            bap = sym_obj.get("baseAssetPrecision")
+            if isinstance(bap, int) and bap >= 0:
+                res["stepSize"] = Decimal(1) / (Decimal(10) ** bap)
+
+        # tickSize from max(quotePrecision, quoteAssetPrecision)
+        qp = sym_obj.get("quotePrecision")
+        qap = sym_obj.get("quoteAssetPrecision", qp)
+        prec = None
+        if isinstance(qp, int): prec = qp
+        if isinstance(qap, int): prec = max(prec or 0, qap)
+        if prec is not None:
+            res["tickSize"] = Decimal(1) / (Decimal(10) ** int(prec))
+
+        # minQty default to stepSize if not given (many venues allow 1 step as min)
+        if res["minQty"] is None and res["stepSize"] not in (None, Decimal("0")):
+            res["minQty"] = res["stepSize"]
+
+    # 3) minNotional fallback from env
+    if not res["minNotional"]:
+        res["minNotional"] = _as_dec(os.getenv("MIN_NOTIONAL_FALLBACK_USDT", "5"))
+
+    return res
 
 async def symbol_filters(symbol: str) -> dict:
     sym = symbol.upper()
     if sym in _SYMBOL_FILTERS:
         return _SYMBOL_FILTERS[sym]
-    info = await _get_exchange_info()
-    bysym = {s["symbol"].upper(): s for s in (info.get("symbols") or [])}
-    obj = bysym.get(sym) or {}
+
+    # Pull just this symbol if possible (faster, up-to-date)
+    info = await exchange_info(sym)
+    arr = info.get("symbols") or []
+    obj = (arr[0] if arr else {}) or {}
     parsed = _parse_symbol_filters(obj)
-    # fallbacks
-    if not parsed["minNotional"]:
-        parsed["minNotional"] = _as_dec(os.getenv("MIN_NOTIONAL_FALLBACK_USDT", "5"))
     _SYMBOL_FILTERS[sym] = parsed
     return parsed
 
@@ -157,70 +183,48 @@ async def ticker24(symbols: list[str]|None=None) -> list[dict]:
     return data if isinstance(data, list) else [data]
 
 def _quantize_down(x: Decimal, step: Decimal) -> Decimal:
-    if step is None or step == 0:
-        return x
-    # quantize to step by dividing then floor then multiply
-    q = (x / step).to_integral_value(rounding=ROUND_DOWN) * step
-    return q
+    if not step or step == 0: return x
+    return (x / step).to_integral_value(rounding=ROUND_DOWN) * step
 
 def _quantize_up(x: Decimal, step: Decimal) -> Decimal:
-    if step is None or step == 0:
-        return x
-    q = (x / step).to_integral_value(rounding=ROUND_UP) * step
-    return q
+    if not step or step == 0: return x
+    return (x / step).to_integral_value(rounding=ROUND_UP) * step
 
 async def round_price(symbol: str, price: float) -> float:
     f = await symbol_filters(symbol)
-    p = _as_dec(price)
     tick = f.get("tickSize") or Decimal("0")
-    return float(_quantize_down(p, tick) if tick else p)
+    return float(_quantize_down(_as_dec(price), tick) if tick else _as_dec(price))
 
 async def round_qty(symbol: str, qty: float) -> float:
     f = await symbol_filters(symbol)
-    q = _as_dec(qty)
     step = f.get("stepSize") or Decimal("0")
-    q = _quantize_down(q, step) if step else q
-    # respect minQty
+    q = _quantize_down(_as_dec(qty), step) if step else _as_dec(qty)
     minq = f.get("minQty") or Decimal("0")
     if minq and q < minq:
         q = minq
     return float(q)
 
 async def size_order(symbol: str, price: float, budget_usdt: float) -> float:
-    """
-    Returns a qty that:
-      - rounds to stepSize
-      - meets minQty
-      - meets minNotional (<= budget)
-    or 0.0 if impossible with given budget.
-    """
     f = await symbol_filters(symbol)
+    p = _as_dec(price)
+    budget = _as_dec(budget_usdt)
     step = f.get("stepSize") or Decimal("0")
     minq = f.get("minQty") or Decimal("0")
     minn = f.get("minNotional") or Decimal("0")
-    p = _as_dec(price)
-    budget = _as_dec(budget_usdt)
-    if p <= 0 or budget <= 0:
-        return 0.0
+    if p <= 0 or budget <= 0: return 0.0
 
-    # initial qty = floor(budget/price) to step
     raw = budget / p
     q = _quantize_down(raw, step) if step else raw
     if minq and q < minq:
         q = minq
 
-    # ensure min notional
     notional = q * p
     if minn and notional < minn:
         need_q = _quantize_up(minn / p, step) if step else (minn / p)
-        if need_q * p > budget:
+        if (need_q * p) > budget:
             return 0.0
         q = need_q
-
-    # final guard
-    if q <= 0:
-        return 0.0
-    return float(q)
+    return float(q) if q > 0 else 0.0
 
 async def base_quote(symbol: str) -> tuple[str, str]:
     info = await _get_exchange_info()

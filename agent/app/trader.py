@@ -39,37 +39,19 @@ def _tp_price(buy_price: float,
     return buy_price * (1.0 + maker_fee) * (1.0 + TP_PCT) / (1.0 - taker_fee)
 
 async def _is_tradable(symbol: str) -> tuple[bool, dict]:
-    """
-    MEXC exchangeInfo may return status as "1" (online), "ENABLED", "TRADING", etc.
-    The reliable gate is isSpotTradingAllowed. tradeSideType: "1"=all, "2"=buy-only, "3"=sell-only, "4"=close. 
-    We allow entries if: online-ish AND isSpotTradingAllowed AND buy is allowed.
-    """
-    info = await mexc.exchange_info([symbol.upper()])
+    info = await mexc.exchange_info(symbol)
     arr = info.get("symbols") or []
     if not arr:
-        return False, {"reason": "unknown symbol"}
-
+        return False, {"reason":"unknown"}
     s = arr[0]
     status_raw = s.get("status")
-    status_str = str(status_raw).upper() if status_raw is not None else ""
+    status_str = str(status_raw).upper()
     online_ok = status_str in {"1", "ENABLED", "TRADING", "ONLINE", "OPEN"} or status_raw == 1
-
-    spot_ok = s.get("isSpotTradingAllowed")
-    if spot_ok is None:
-        # docs say this field exists, but if missing, assume True
-        spot_ok = True
-
+    spot_ok = bool(s.get("isSpotTradingAllowed", True))
     trade_side = str(s.get("tradeSideType", "1"))
-    buy_allowed = trade_side in ("1", "2")
-
+    buy_allowed = trade_side in ("1","2")
     ok = bool(online_ok and spot_ok and buy_allowed)
-    return ok, {
-        "status": status_raw,
-        "isSpotTradingAllowed": s.get("isSpotTradingAllowed"),
-        "tradeSideType": s.get("tradeSideType"),
-        "base": s.get("baseAsset"),
-        "quote": s.get("quoteAsset"),
-    }
+    return ok, {"status":status_raw, "isSpotTradingAllowed":spot_ok, "tradeSideType":trade_side}
 
 async def trader_tick(symbols: list[str], interval: str = "60m", broadcast=None) -> None:
     if not TRADE_ENABLED:
