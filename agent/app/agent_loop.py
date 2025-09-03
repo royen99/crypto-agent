@@ -15,25 +15,27 @@ MAX_STEPS = int(os.getenv("MAX_STEPS", "8"))
 ALLOWLIST = {h.strip() for h in os.getenv("ALLOWLIST", "api.github.com,example.com").split(",") if h.strip()}
 
 SYSTEM_PROMPT = """You are an autonomous but cautious agent.
-Respond ONLY with JSON objects, no extra text.
+Output ONLY a single valid JSON object (no markdown, no extra text).
 
-Formats:
-- {"type":"tool","name":"<tool>","args":{...}}
-- {"type":"final","answer":"..."}
+Allowed formats:
+{"type":"tool","name":"<tool>","args":{...}}
+{"type":"final","answer":"..."}
 
 Available tools:
-- http_get(url): GET from allowlisted domains (no auth). Return short text.
-- write_note(key, text, tags?): store memory.
+- http_get(url)                            # allowlisted GET
+- write_note(key, text, tags?)             # persist text
+- mexc_list_usdt()                         # list USDT symbols
+- mexc_klines(symbol, interval, limit)     # candles
+- mexc_ta(symbol, interval, limit)         # TA + recommendation
+- mexc_price(symbol, interval="60m")       # last close
+- mexc_buy(symbol, budget_usdt?, price?)   # TEST limit buy (respects filters)
+- mexc_sell(symbol, qty, price?)           # TEST limit sell (respects filters)
 
-# MEXC market tools (Spot, public):
-- mexc_list_usdt(): list online USDT spot symbols.
-- mexc_klines(symbol, interval="1h", limit=200): recent candles.
-- mexc_ta(symbol, interval="1h", limit=300): compute indicators & recommendation.
-
-Rules:
-- Prefer intervals: 1m,5m,15m,30m,60m,4h,1d,1W,1M.
-- Keep outputs concise JSON.
-If a tool fails, try a different approach or finalize gracefully.
+Policy:
+- You MAY place TEST orders using mexc_buy/mexc_sell. These never execute live.
+- Assume TEST mode is enabled; if a tool reports live trading is disabled, finalize with a short explanation.
+- Prefer intervals: 1m,5m,15m,30m,60m,4h,1d.
+- If a tool fails, try an alternative or finalize gracefully.
 """
 
 async def call_ollama(messages: list[dict]) -> dict:
@@ -137,6 +139,12 @@ async def run_agent(run_id: str, ws_broadcast):
                         result = await tool_mexc_klines(args.get("symbol",""), args.get("interval","60m"), int(args.get("limit",200)))
                     elif name == "mexc_ta":
                         result = await tool_mexc_ta(args.get("symbol",""), args.get("interval","60m"), int(args.get("limit",300)))
+                    elif name == "mexc_price":
+                        result = await tool_mexc_price(args.get("symbol",""), args.get("interval","60m"))
+                    elif name == "mexc_buy":
+                        result = await tool_mexc_buy(args.get("symbol",""), args.get("budget_usdt"), args.get("price"))
+                    elif name == "mexc_sell":
+                        result = await tool_mexc_sell(args.get("symbol",""), float(args.get("qty", 0)), args.get("price"))
                     else:
                         result = {"error": "unknown tool"}
 
@@ -213,3 +221,80 @@ async def tool_mexc_ta(symbol: str, interval: str="60m", limit: int=300) -> dict
     summ["symbol"] = symbol.upper()
     summ["interval"] = interval
     return summ
+
+async def tool_mexc_price(symbol: str, interval: str = "60m") -> dict:
+    """Return last close for a symbol on a given interval."""
+    df = await mexc.klines(symbol.upper(), interval=interval, limit=2)
+    price = float(df["close"].iloc[-1])
+    return {"symbol": symbol.upper(), "interval": interval, "price": price}
+
+async def tool_mexc_buy(symbol: str,
+                        budget_usdt: float | None = None,
+                        price: float | None = None) -> dict:
+    """
+    Place a TEST LIMIT BUY using env MAX_USDT_PER_TRADE if budget not given.
+    Respects tickSize/stepSize/minNotional. Returns qty/price used.
+    """
+    test = os.getenv("TRADE_TEST_ONLY", "true").lower() == "true"
+    if not test:
+        return {"error": "Live orders disabled. Set TRADE_TEST_ONLY=true for test orders."}
+
+    max_usdt = float(os.getenv("MAX_USDT_PER_TRADE", "50"))
+    budget = max_usdt if (budget_usdt is None) else float(budget_usdt)
+
+    # pick a price (last close) if not provided, then round to tick
+    if price is None:
+        df = await mexc.klines(symbol.upper(), interval="60m", limit=2)
+        price = float(df["close"].iloc[-1])
+
+    price = await mexc.round_price(symbol, price)
+    qty = await mexc.size_order(symbol, price, budget)
+    if qty <= 0:
+        return {"error": "Budget too small for minNotional/stepSize."}
+
+    resp = await signed_new_order(
+        symbol=symbol.upper(),
+        side="BUY",
+        order_type="LIMIT",
+        quantity=qty,
+        price=price,
+        tif="GTC",
+        test=True,  # always test here
+        client_order_id=f"goalbuy_{int(time.time())}"
+    )
+    return {"ok": True, "mode": "test", "symbol": symbol.upper(), "qty": qty, "price": price, "resp": resp}
+
+async def tool_mexc_sell(symbol: str,
+                         qty: float,
+                         price: float | None = None) -> dict:
+    """
+    Place a TEST LIMIT SELL for given qty. Rounds price; refuses if invalid.
+    """
+    test = os.getenv("TRADE_TEST_ONLY", "true").lower() == "true"
+    if not test:
+        return {"error": "Live orders disabled. Set TRADE_TEST_ONLY=true for test orders."}
+
+    if qty is None or float(qty) <= 0:
+        return {"error": "qty must be > 0"}
+
+    if price is None:
+        df = await mexc.klines(symbol.upper(), interval="60m", limit=2)
+        price = float(df["close"].iloc[-1])
+    price = await mexc.round_price(symbol, price)
+
+    # also round qty to step/minQty
+    qty = await mexc.round_qty(symbol, float(qty))
+    if qty <= 0:
+        return {"error": "qty below stepSize/minQty"}
+
+    resp = await signed_new_order(
+        symbol=symbol.upper(),
+        side="SELL",
+        order_type="LIMIT",
+        quantity=qty,
+        price=price,
+        tif="GTC",
+        test=True,  # always test here
+        client_order_id=f"goalsell_{int(time.time())}"
+    )
+    return {"ok": True, "mode": "test", "symbol": symbol.upper(), "qty": qty, "price": price, "resp": resp}
