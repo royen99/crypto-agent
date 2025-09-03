@@ -232,25 +232,33 @@ async def tool_mexc_buy(symbol: str,
                         budget_usdt: float | None = None,
                         price: float | None = None) -> dict:
     """
-    Place a TEST LIMIT BUY using env MAX_USDT_PER_TRADE if budget not given.
-    Respects tickSize/stepSize/minNotional. Returns qty/price used.
+    Place a LIMIT BUY (TEST or LIVE based on env).
+    Respects tickSize/stepSize/minNotional and caps spend by MAX_USDT_PER_TRADE.
     """
-    test = os.getenv("TRADE_TEST_ONLY", "true").lower() == "true"
-    if not test:
-        return {"error": "Live orders disabled. Set TRADE_TEST_ONLY=true for test orders."}
+    trade_enabled = os.getenv("TRADE_ENABLED", "false").lower() == "true"
+    test_only     = os.getenv("TRADE_TEST_ONLY", "true").lower() == "true"
+    if not trade_enabled:
+        return {"error": "Trading disabled (TRADE_ENABLED=false)."}
 
+    mode = "test" if test_only else "live"
     max_usdt = float(os.getenv("MAX_USDT_PER_TRADE", "50"))
     budget = max_usdt if (budget_usdt is None) else float(budget_usdt)
+    # hard cap so the goal can't overrule your policy
+    budget = min(budget, max_usdt)
 
-    # pick a price (last close) if not provided, then round to tick
+    # derive a price (last close) if not provided, then round to tick
     if price is None:
         df = await mexc.klines(symbol.upper(), interval="60m", limit=2)
         price = float(df["close"].iloc[-1])
-
     price = await mexc.round_price(symbol, price)
+
+    # compute qty that meets stepSize/minQty/minNotional within budget
     qty = await mexc.size_order(symbol, price, budget)
     if qty <= 0:
         return {"error": "Budget too small for minNotional/stepSize."}
+    qty = await mexc.round_qty(symbol, qty)
+    if qty <= 0:
+        return {"error": "Rounded qty fell below stepSize/minQty."}
 
     resp = await signed_new_order(
         symbol=symbol.upper(),
@@ -259,20 +267,22 @@ async def tool_mexc_buy(symbol: str,
         quantity=qty,
         price=price,
         tif="GTC",
-        test=True,  # always test here
+        test=test_only,
         client_order_id=f"goalbuy_{int(time.time())}"
     )
-    return {"ok": True, "mode": "test", "symbol": symbol.upper(), "qty": qty, "price": price, "resp": resp}
+    return {"ok": True, "mode": mode, "symbol": symbol.upper(), "qty": qty, "price": price, "resp": resp}
 
 async def tool_mexc_sell(symbol: str,
                          qty: float,
                          price: float | None = None) -> dict:
     """
-    Place a TEST LIMIT SELL for given qty. Rounds price; refuses if invalid.
+    Place a LIMIT SELL (TEST or LIVE based on env).
+    Rounds price to tick and qty to step/minQty.
     """
-    test = os.getenv("TRADE_TEST_ONLY", "true").lower() == "true"
-    if not test:
-        return {"error": "Live orders disabled. Set TRADE_TEST_ONLY=true for test orders."}
+    trade_enabled = os.getenv("TRADE_ENABLED", "false").lower() == "true"
+    test_only     = os.getenv("TRADE_TEST_ONLY", "true").lower() == "true"
+    if not trade_enabled:
+        return {"error": "Trading disabled (TRADE_ENABLED=false)."}
 
     if qty is None or float(qty) <= 0:
         return {"error": "qty must be > 0"}
@@ -280,13 +290,13 @@ async def tool_mexc_sell(symbol: str,
     if price is None:
         df = await mexc.klines(symbol.upper(), interval="60m", limit=2)
         price = float(df["close"].iloc[-1])
+
     price = await mexc.round_price(symbol, price)
-
-    # also round qty to step/minQty
-    qty = await mexc.round_qty(symbol, float(qty))
+    qty   = await mexc.round_qty(symbol, float(qty))
     if qty <= 0:
-        return {"error": "qty below stepSize/minQty"}
+        return {"error": "qty below stepSize/minQty after rounding."}
 
+    mode = "test" if test_only else "live"
     resp = await signed_new_order(
         symbol=symbol.upper(),
         side="SELL",
@@ -294,7 +304,7 @@ async def tool_mexc_sell(symbol: str,
         quantity=qty,
         price=price,
         tif="GTC",
-        test=True,  # always test here
+        test=test_only,
         client_order_id=f"goalsell_{int(time.time())}"
     )
-    return {"ok": True, "mode": "test", "symbol": symbol.upper(), "qty": qty, "price": price, "resp": resp}
+    return {"ok": True, "mode": mode, "symbol": symbol.upper(), "qty": qty, "price": price, "resp": resp}
