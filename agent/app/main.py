@@ -13,8 +13,8 @@ from .agent_loop import run_agent
 from .ws import ws_manager
 from . import mexc
 from .ta import ta_summary
-from .recs import recs_loop, get_latest, get_meta
-from .trader import trader_loop
+from .recs import recs_loop, get_latest, get_meta, _symbols_from_env
+from .trader import trader_loop, trader_get_status, trader_tick
 
 import datetime as dt
 
@@ -41,6 +41,19 @@ async def index():
 
 class RunCreate(BaseModel):
     goal: str
+
+@app.get("/trader/status")
+async def trader_status():
+    return trader_get_status()
+
+@app.post("/trader/run-now")
+async def trader_run_now():
+    # fire a single pass immediately for debugging
+    async def broadcast(room, msg):
+        await ws_manager.broadcast(room, msg)
+    symbols = _symbols_from_env()
+    actions = await trader_tick(symbols, interval=os.getenv("REC_INTERVAL","60m"), broadcast=broadcast)
+    return {"ok": True, "actions": int(actions or 0)}
 
 @app.get("/recs/history")
 async def recs_history(symbols: str, interval: str = "60m", points: int = 48):

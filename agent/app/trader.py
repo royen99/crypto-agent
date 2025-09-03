@@ -23,11 +23,6 @@ TRADER_LAST_TICK = None
 TRADER_LAST_ERR = None
 TRADER_LAST_ACTIONS = 0
 
-def _qty_for_budget(price: float) -> float:
-    if price <= 0: return 0.0
-    q = MAX_USDT / price
-    return math.floor(q * 10000) / 10000.0
-
 def trader_get_status():
     return {
         "last_tick_at": TRADER_LAST_TICK,
@@ -78,7 +73,8 @@ async def _is_tradable(symbol: str) -> tuple[bool, dict]:
 
 async def trader_tick(symbols: list[str], interval: str = "60m", broadcast=None) -> None:
     if not TRADE_ENABLED:
-        return
+        return 0
+    actions = 0
 
     # 0) Get last closes
     closes: dict[str, float] = {}
@@ -211,6 +207,7 @@ async def trader_tick(symbols: list[str], interval: str = "60m", broadcast=None)
                         quantity=qty, price=price_r, tif="GTC", test=TEST_ONLY,
                         client_order_id=f"botbuy_{int(time.time())}"
                     )
+                    actions += 1
                     s.add(MexcOrder(symbol=sym, side="BUY", type="LIMIT",
                                     price=price_r, qty=qty,
                                     status="NEW", is_test=TEST_ONLY,
@@ -263,6 +260,7 @@ async def trader_tick(symbols: list[str], interval: str = "60m", broadcast=None)
                         quantity=qty, price=tp, tif="GTC", test=TEST_ONLY,
                         client_order_id=f"botsell_{int(time.time())}"
                     )
+                    actions += 1
                     s.add(MexcOrder(symbol=sym, side="SELL", type="LIMIT",
                                     price=tp, qty=qty,
                                     status="NEW", is_test=TEST_ONLY,
@@ -280,6 +278,8 @@ async def trader_tick(symbols: list[str], interval: str = "60m", broadcast=None)
                     if broadcast:
                         await broadcast("recs", {"type":"trade_error","symbol":sym,"error":str(e)})
                     continue
+
+    return actions
 
 async def trader_loop(broadcast):
     from .recs import _symbols_from_env
