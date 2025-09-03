@@ -6,7 +6,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from . import mexc
 from .ta import ta_summary
-from .db import SessionLocal, Run, RunStatus, add_event, Memory, sanitize_json
+from .db import SessionLocal, Run, RunStatus, add_event, Memory, sanitize_json, MexcOrder
 from .mexc_signed import new_order as signed_new_order, account_info as signed_account_info, query_order as signed_query
 
 
@@ -65,15 +65,6 @@ async def call_ollama(messages: list[dict]) -> dict:
             except Exception:
                 pass
         return {"type": "final", "answer": "Model could not produce valid JSON; stopping."}
-
-async def tool_mexc_buy(symbol:str, price:float, usdt:float):
-    qty = max(0.0, int((usdt/price)*10000)/10000.0)
-    r = await signed_new_order(symbol, "BUY", "LIMIT", qty, price, tif="GTC", test=os.getenv("TRADE_TEST_ONLY","true").lower()=="true")
-    return {"ok": True, "qty": qty, "resp": r}
-
-async def tool_mexc_sell(symbol:str, price:float, qty:float):
-    r = await signed_new_order(symbol, "SELL", "LIMIT", qty, price, tif="GTC", test=os.getenv("TRADE_TEST_ONLY","true").lower()=="true")
-    return {"ok": True, "resp": r}
 
 async def tool_http_get(url: str) -> dict:
     host = urlparse(url).hostname or ""
@@ -230,9 +221,8 @@ async def tool_mexc_price(symbol: str, interval: str = "60m") -> dict:
     return {"symbol": symbol.upper(), "interval": interval, "price": float(df["close"].iloc[-1])}
 
 
-async def tool_mexc_buy(symbol: str,
-                        budget_usdt: float | None = None,
-                        price: float | None = None) -> dict:
+async def tool_mexc_buy(symbol: str, budget_usdt: float | None = None, price: float | None = None) -> dict:
+
     trade_enabled = os.getenv("TRADE_ENABLED", "false").lower() == "true"
     test_only     = os.getenv("TRADE_TEST_ONLY", "true").lower() == "true"
     if not trade_enabled:
@@ -290,15 +280,33 @@ async def tool_mexc_buy(symbol: str,
         test=test_only,
         client_order_id=f"goalbuy_{int(time.time())}"
     )
+    # 🔸 persist
+    try:
+        async with SessionLocal() as s:
+            s.add(MexcOrder(
+                symbol=symbol.upper(),
+                side="BUY",
+                type="LIMIT",
+                client_order_id=f"goalbuy_{int(time.time())}",  # same id you used above
+                mexc_order_id=(resp or {}).get("orderId") if isinstance(resp, dict) else None,
+                price=price,
+                qty=qty,
+                status=((resp or {}).get("status") or "NEW") if isinstance(resp, dict) else "NEW",
+                is_test=test_only,
+                error=None
+            ))
+            await s.commit()
+    except Exception:
+        # don't break the tool result if DB write fails
+        pass
+
     return {
-        "ok": True, "mode": mode, "symbol": symbol.upper(),
-        "qty": qty, "price": price, "budget_used": price * qty,
-        "resp": resp
+        "ok": True, "mode": ("test" if test_only else "live"),
+        "symbol": symbol.upper(), "qty": qty, "price": price,
+        "budget_used": price * qty, "resp": resp
     }
 
-async def tool_mexc_sell(symbol: str,
-                         qty: float,
-                         price: float | None = None) -> dict:
+async def tool_mexc_sell(symbol: str, qty: float, price: float | None = None) -> dict:
     trade_enabled = os.getenv("TRADE_ENABLED", "false").lower() == "true"
     test_only     = os.getenv("TRADE_TEST_ONLY", "true").lower() == "true"
     if not trade_enabled:
@@ -347,8 +355,27 @@ async def tool_mexc_sell(symbol: str,
         test=test_only,
         client_order_id=f"goalsell_{int(time.time())}"
     )
+    # 🔸 persist
+    try:
+        async with SessionLocal() as s:
+            s.add(MexcOrder(
+                symbol=symbol.upper(),
+                side="SELL",
+                type="LIMIT",
+                client_order_id=f"goalsell_{int(time.time())}",
+                mexc_order_id=(resp or {}).get("orderId") if isinstance(resp, dict) else None,
+                price=price,
+                qty=qty,
+                status=((resp or {}).get("status") or "NEW") if isinstance(resp, dict) else "NEW",
+                is_test=test_only,
+                error=None
+            ))
+            await s.commit()
+    except Exception:
+        pass
+
     return {
-        "ok": True, "mode": mode, "symbol": symbol.upper(),
-        "qty": qty, "price": price, "notional": price * qty,
-        "resp": resp
+        "ok": True, "mode": ("test" if test_only else "live"),
+        "symbol": symbol.upper(), "qty": qty, "price": price,
+        "notional": price * qty, "resp": resp
     }
